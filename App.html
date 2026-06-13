@@ -3,7 +3,8 @@
      App.html — router, State, Api helper, app startup.
      ========================================================= */
 
-  const Views = window.Views = window.Views || {}; 
+  const Views = window.Views = window.Views || {}; // populated by View_*.html scripts; do NOT reset.
+
   // ---------- Api wrapper around google.script.run ----------
 
   class ApiError extends Error {
@@ -18,13 +19,21 @@
     call(fnName, payload) {
       return new Promise((resolve, reject) => {
         const runner = google.script.run
-          .withSuccessHandler(res => {
-            if (res && res.ok) resolve(res.data);
-            else reject(new ApiError(res && res.error || { message: 'Unknown error' }));
-          })
-          .withFailureHandler(err => {
-            reject(new ApiError({ message: (err && err.message) || String(err), code: 'TRANSPORT' }));
-          });
+      .withSuccessHandler(res => {
+          if (res && res.ok) return resolve(res.data);
+          if (res && res.error) return reject(new ApiError(res.error));
+          reject(new ApiError({
+            code: 'NO_RESPONSE',
+            message: fnName + ' returned no envelope. Got: ' + JSON.stringify(res) +
+              '. Most common cause: stale deployment. In Apps Script: Deploy → Manage deployments → ✏️ → Version: New version → Deploy.'
+          }));
+        })
+      .withFailureHandler(err => {
+          reject(new ApiError({
+            code: 'TRANSPORT',
+            message: fnName + ' transport failed: ' + ((err && err.message) || String(err) || '(no message — Apps Script returned without a body)')
+          }));
+        });
         if (typeof runner[fnName] !== 'function') {
           reject(new ApiError({ code: 'NO_FUNCTION', message: 'Unknown API: ' + fnName }));
           return;
@@ -140,6 +149,11 @@
 
     navigate(path) { location.hash = '#' + path; },
 
+    // Generation counter — bumped on every handle() invocation.
+    // Async helpers that run after an await can snapshot viewGen() and
+    // bail out via viewStale(gen) before touching DOM.
+    _gen: 0,
+
     _parseHash() {
       const raw = location.hash.replace(/^#/, '') || '/dashboard';
       const [path, qs] = raw.split('?');
@@ -152,15 +166,18 @@
     },
 
     async handle() {
+      const myGen = ++this._gen;
       const { path, params } = this._parseHash();
       const fn = this.routes[path] || this.routes['/dashboard'];
       try {
         document.getElementById('view').innerHTML = '<div class="loading-shell">Loading…</div>';
         await State.refreshCounts();
+        if (this._gen !== myGen) return;   // user navigated again — abort
         Nav.render();
         await fn(params);
       } catch (e) {
         console.error(e);
+        if (this._gen !== myGen) return;   // don't overwrite a newer view with stale error
         document.getElementById('view').innerHTML =
           '<div class="card"><h2>Error loading view</h2><pre>' +
           UI.escapeHtml(e.message || String(e)) + '</pre></div>';
@@ -173,6 +190,14 @@
     }
   };
   window.Router = Router;
+
+  // Public helpers any view's async helper can use to detect that the
+  // user has navigated away mid-flight. Snapshot at the start, bail later:
+  //   const myGen = viewGen();
+  //   const data = await Api.call(...);
+  //   if (viewStale(myGen)) return;
+  window.viewGen   = function ()  { return Router._gen; };
+  window.viewStale = function (g) { return Router._gen !== g; };
 
   // ---------- Init ----------
 

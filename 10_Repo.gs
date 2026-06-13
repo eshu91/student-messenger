@@ -24,9 +24,17 @@ class BaseRepo {
     return sh;
   }
 
-  _rowToObject(row) {
+_rowToObject(row) {
     const obj = {};
-    this.headers.forEach((h, i) => { obj[h] = row[i]; });
+    this.headers.forEach((h, i) => {
+      let v = row[i];
+      // google.script.run returns the WHOLE response as null if any nested
+      // field is a Date object. Sheets auto-parses date-looking text into
+      // Date, so normalise every cell to a JSON-safe type here.
+      if (v instanceof Date) v = v.toISOString();
+      else if (v === null || v === undefined) v = '';
+      obj[h] = v;
+    });
     return obj;
   }
 

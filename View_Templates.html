@@ -20,10 +20,13 @@
     },
 
     async _refreshList() {
+      const myGen = viewGen();
       try {
         const rows = await Api.call('api_templates_list', {});
+        if (viewStale(myGen)) return;
         Views.Templates._state.list = rows;
         const pane = document.getElementById('tpl-list-pane');
+        if (!pane) return;
         if (!rows.length) {
           pane.innerHTML = UI.empty('No templates yet.', '<button class="btn btn-primary" onclick="Views.Templates._editEmpty()">Create one</button>');
           return;
@@ -48,7 +51,9 @@
           Views.Templates._edit(Views.Templates._state.selectedUuid);
         }
       } catch (e) {
-        document.getElementById('tpl-list-pane').innerHTML = '<div class="card">Error: ' + UI.escapeHtml(e.message) + '</div>';
+        if (viewStale(myGen)) return;
+        const errPane = document.getElementById('tpl-list-pane');
+        if (errPane) errPane.innerHTML = '<div class="card">Error: ' + UI.escapeHtml(e.message) + '</div>';
       }
     },
 
@@ -61,15 +66,18 @@
     },
 
     async _edit(uuid) {
+      const myGen = viewGen();
       Views.Templates._state.selectedUuid = uuid;
       try {
         const t = await Api.call('api_templates_get', { uuid });
+        if (viewStale(myGen)) return;
         Views.Templates._renderEditor(t, true);
       } catch (e) { UI.toast(e.message, 'danger'); }
     },
 
     _renderEditor(t, isExisting) {
       const pane = document.getElementById('tpl-editor-pane');
+      if (!pane) return;   // user navigated away — silently skip
       pane.innerHTML =
         '<div class="row" style="justify-content:space-between; align-items:flex-start">' +
           '<h2 style="margin:0">' + (isExisting ? 'Edit template' : 'New template') + '</h2>' +
@@ -150,7 +158,8 @@
             UI.toast('Deleted', 'success');
             Views.Templates._state.selectedUuid = null;
             Views.Templates._refreshList();
-            document.getElementById('tpl-editor-pane').innerHTML = '<p class="muted">Pick a template on the left, or create a new one.</p>';
+            const ed = document.getElementById('tpl-editor-pane');
+            if (ed) ed.innerHTML = '<p class="muted">Pick a template on the left, or create a new one.</p>';
           } catch (e) { UI.toast(e.message, 'danger'); }
         });
       }

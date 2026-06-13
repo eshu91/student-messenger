@@ -2,10 +2,12 @@
   /* =========================================================
      Components.html — UI primitives shared across all views.
      ========================================================= */
+
   // Views registry — created here so every View_*.html script
   // can register into it (Components is included before any view).
-   window.Views = window.Views || {};
-   const UI = {};
+  window.Views = window.Views || {};
+
+  const UI = {};
 
   // ---------- Escape ----------
   UI.escapeHtml = function (s) {

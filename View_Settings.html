@@ -14,19 +14,22 @@
     },
 
     async _load() {
+      const myGen = viewGen();
       try {
         const [keys, configs] = await Promise.all([
           Api.call('api_settings_aiKeyStatus'),
           Api.call('api_configs_list')
         ]);
+        if (viewStale(myGen)) return;
         Views.Settings._state.keys = keys;
         Views.Settings._state.configs = configs;
         Views.Settings._renderKeys();
         Views.Settings._renderAi();
         Views.Settings._renderGeneral();
       } catch (e) {
-        document.getElementById('settings-keys').innerHTML =
-          '<div class="card danger">' + UI.escapeHtml(e.message) + '</div>';
+        if (viewStale(myGen)) return;
+        const k = document.getElementById('settings-keys');
+        if (k) k.innerHTML = '<div class="card danger">' + UI.escapeHtml(e.message) + '</div>';
       }
     },
 
@@ -41,6 +44,7 @@
         openrouter: { name: 'OpenRouter', hint: 'openrouter.ai — pay-as-you-go aggregator' }
       };
       const root = document.getElementById('settings-keys');
+      if (!root) return;
       const k = Views.Settings._state.keys;
       root.innerHTML =
         '<div class="card">' +
@@ -108,6 +112,7 @@
 
     _renderAi() {
       const root = document.getElementById('settings-ai');
+      if (!root) return;
       const configs = Views.Settings._state.configs;
       const byKey = {};
       configs.forEach(c => { byKey[c.Category + '.' + c.Key] = c; });
@@ -150,6 +155,7 @@
 
     _renderGeneral() {
       const root = document.getElementById('settings-general');
+      if (!root) return;
       const configs = Views.Settings._state.configs;
       const byKey = {};
       configs.forEach(c => { byKey[c.Category + '.' + c.Key] = c; });

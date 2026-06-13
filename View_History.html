@@ -48,12 +48,14 @@
         const tpls = await Api.call('api_templates_list', {});
         Views.History._state.templates = tpls;
         const sel = document.getElementById('h-template');
-        tpls.forEach(t => {
-          const opt = document.createElement('option');
-          opt.value = t.UUID;
-          opt.textContent = t.Name;
-          sel.appendChild(opt);
-        });
+        if (sel) {
+          tpls.forEach(t => {
+            const opt = document.createElement('option');
+            opt.value = t.UUID;
+            opt.textContent = t.Name;
+            sel.appendChild(opt);
+          });
+        }
       } catch (_) { /* ignore */ }
 
       document.getElementById('h-apply').addEventListener('click', () => Views.History._refresh());

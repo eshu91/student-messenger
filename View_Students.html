@@ -30,7 +30,9 @@
     },
 
     async _refresh() {
+      const myGen = viewGen();
       const list = document.getElementById('stu-list');
+      if (!list) return;
       list.innerHTML = UI.skeleton(4);
       try {
         const filter = {};
@@ -46,15 +48,18 @@
           Api.call('api_students_courses'),
           Api.call('api_students_batches')
         ]);
+        if (viewStale(myGen)) return;
 
         // Populate dropdowns once
         const cSel = document.getElementById('stu-course');
         const bSel = document.getElementById('stu-batch');
-        const cur = { c: cSel.value, b: bSel.value };
-        cSel.innerHTML = '<option value="">All</option>' +
-          courses.map(c => '<option value="' + UI.escapeAttr(c) + '"' + (c === cur.c ? ' selected' : '') + '>' + UI.escapeHtml(c) + '</option>').join('');
-        bSel.innerHTML = '<option value="">All</option>' +
-          batches.map(b => '<option value="' + UI.escapeAttr(b) + '"' + (b === cur.b ? ' selected' : '') + '>' + UI.escapeHtml(b) + '</option>').join('');
+        if (cSel && bSel) {
+          const cur = { c: cSel.value, b: bSel.value };
+          cSel.innerHTML = '<option value="">All</option>' +
+            courses.map(c => '<option value="' + UI.escapeAttr(c) + '"' + (c === cur.c ? ' selected' : '') + '>' + UI.escapeHtml(c) + '</option>').join('');
+          bSel.innerHTML = '<option value="">All</option>' +
+            batches.map(b => '<option value="' + UI.escapeAttr(b) + '"' + (b === cur.b ? ' selected' : '') + '>' + UI.escapeHtml(b) + '</option>').join('');
+        }
 
         if (!rows.length) {
           list.innerHTML = UI.empty('No students match these filters.',
