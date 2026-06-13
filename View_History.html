@@ -1,0 +1,169 @@
+<script>
+  Views.History = {
+    _state: { filter: {}, templates: [] },
+
+    async render(params) {
+      const view = document.getElementById('view');
+      view.innerHTML =
+        '<div class="view-header">' +
+          '<h1>History</h1>' +
+          '<div class="row">' +
+            '<button class="btn" id="h-export">Export CSV</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="card">' +
+          '<div class="form-row">' +
+            '<div class="form-field"><label>From</label>' +
+              '<input id="h-from" type="date"></div>' +
+            '<div class="form-field"><label>To</label>' +
+              '<input id="h-to" type="date"></div>' +
+            '<div class="form-field"><label>Status</label>' +
+              '<select id="h-status">' +
+                '<option value="">Any</option>' +
+                '<option value="Sent">Sent</option>' +
+                '<option value="Skipped">Skipped</option>' +
+              '</select>' +
+            '</div>' +
+            '<div class="form-field"><label>Template</label>' +
+              '<select id="h-template"><option value="">Any</option></select>' +
+            '</div>' +
+            '<div class="form-field"><label>AI assisted</label>' +
+              '<select id="h-ai">' +
+                '<option value="">Any</option>' +
+                '<option value="yes">Yes</option>' +
+                '<option value="no">No</option>' +
+              '</select>' +
+            '</div>' +
+            '<div class="form-field" style="flex:2"><label>Search</label>' +
+              '<input id="h-q" type="text" placeholder="student name, message text…"></div>' +
+            '<div class="form-field" style="flex:0 0 auto; align-self:flex-end">' +
+              '<button class="btn btn-primary" id="h-apply">Apply</button>' +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+        '<div id="h-list"><div class="loading-shell">Loading…</div></div>';
+
+      // Populate template filter
+      try {
+        const tpls = await Api.call('api_templates_list', {});
+        Views.History._state.templates = tpls;
+        const sel = document.getElementById('h-template');
+        tpls.forEach(t => {
+          const opt = document.createElement('option');
+          opt.value = t.UUID;
+          opt.textContent = t.Name;
+          sel.appendChild(opt);
+        });
+      } catch (_) { /* ignore */ }
+
+      document.getElementById('h-apply').addEventListener('click', () => Views.History._refresh());
+      document.getElementById('h-export').addEventListener('click', () => Views.History._exportCsv());
+      ['h-from','h-to','h-status','h-template','h-ai','h-q'].forEach(id => {
+        document.getElementById(id).addEventListener('keydown', e => {
+          if (e.key === 'Enter') Views.History._refresh();
+        });
+      });
+
+      await Views.History._refresh();
+    },
+
+    _readFilter() {
+      const aiVal = document.getElementById('h-ai').value;
+      const f = {
+        dateFrom: document.getElementById('h-from').value || null,
+        dateTo:   document.getElementById('h-to').value   || null,
+        status:   document.getElementById('h-status').value || null,
+        template: document.getElementById('h-template').value || null,
+        q:        document.getElementById('h-q').value.trim() || null
+      };
+      if (aiVal === 'yes') f.aiAssisted = true;
+      else if (aiVal === 'no') f.aiAssisted = false;
+      Views.History._state.filter = f;
+      return f;
+    },
+
+    async _refresh() {
+      const root = document.getElementById('h-list');
+      root.innerHTML = '<div class="loading-shell">Loading…</div>';
+      try {
+        const f = Views.History._readFilter();
+        const rows = await Api.call('api_history_list', f);
+        if (!rows.length) {
+          root.innerHTML = '<div class="card">' + UI.empty('No history matches your filters.', '') + '</div>';
+          return;
+        }
+        root.innerHTML =
+          '<div class="card" style="padding:0">' +
+            '<table class="data">' +
+              '<thead><tr>' +
+                '<th>When</th><th>Student</th><th>Template</th><th>Tag</th>' +
+                '<th>Status</th><th>AI</th><th>Message</th>' +
+              '</tr></thead><tbody>' +
+              rows.map(r => Views.History._rowHtml(r)).join('') +
+            '</tbody></table>' +
+          '</div>' +
+          '<div class="tiny muted" style="margin-top:8px">' + rows.length + ' rows</div>';
+      } catch (e) {
+        root.innerHTML = '<div class="card danger">' + UI.escapeHtml(e.message) + '</div>';
+      }
+    }
+  };
+
+  // Row HTML
+  Views.History._rowHtml = function (r) {
+    const ai = String(r.WasAiAssisted) === 'true' || r.WasAiAssisted === true ? UI.aiBadge('AI') : '';
+    const statusBadge =
+      String(r.FinalStatus) === 'Sent'
+        ? '<span class="badge badge-success">Sent</span>'
+        : '<span class="badge badge-warning">Skipped</span>';
+    return '<tr>' +
+      '<td class="tiny">' + UI.escapeHtml(UI.formatDate(r.CreatedAt)) + '</td>' +
+      '<td>' + UI.escapeHtml(r.StudentName || '') +
+        '<div class="tiny muted">' + UI.escapeHtml(r.StudentEmail || '') + '</div></td>' +
+      '<td>' + UI.escapeHtml(r.TemplateName || '') + '</td>' +
+      '<td class="tiny">' + UI.escapeHtml(r.CampaignTag || '') + '</td>' +
+      '<td>' + statusBadge + '</td>' +
+      '<td>' + ai + '</td>' +
+      '<td><button class="btn btn-link" onclick="Views.History._showDetail(\'' +
+        UI.escapeAttr(r.UUID) + '\')">View</button></td>' +
+    '</tr>';
+  };
+
+  Views.History._showDetail = async function (uuid) {
+    try {
+      const rows = await Api.call('api_history_list', Views.History._state.filter);
+      const row = rows.find(r => r.UUID === uuid);
+      if (!row) { UI.toast('Not found', 'danger'); return; }
+      UI.modal({
+        title: 'Message detail',
+        width: 640,
+        bodyHtml:
+          '<div class="tiny muted">' +
+            UI.escapeHtml(row.StudentName || '') + ' · ' + UI.escapeHtml(row.StudentEmail || '') +
+            ' · ' + UI.formatDate(row.CreatedAt) +
+          '</div>' +
+          '<pre class="preview-body" style="margin-top:8px">' +
+            UI.escapeHtml(row.RenderedMessage || '') +
+          '</pre>' +
+          (row.SkipReason ? '<p><strong>Skip reason:</strong> ' + UI.escapeHtml(row.SkipReason) + '</p>' : '') +
+          (row.CampaignTag ? '<p><strong>Campaign:</strong> ' + UI.escapeHtml(row.CampaignTag) + '</p>' : ''),
+        footerHtml: '<button class="btn" data-cancel>Close</button>',
+        onMount(el) { el.querySelector('[data-cancel]').addEventListener('click', UI.closeModal); }
+      });
+    } catch (e) { UI.toast(e.message, 'danger'); }
+  };
+
+  Views.History._exportCsv = async function () {
+    try {
+      const csv = await Api.call('api_history_exportCsv', Views.History._state.filter);
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'history-' + new Date().toISOString().slice(0,10) + '.csv';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      UI.toast('CSV downloaded');
+    } catch (e) { UI.toast(e.message, 'danger'); }
+  };
+</script>

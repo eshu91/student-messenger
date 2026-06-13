@@ -1,0 +1,219 @@
+<script>
+  Views.Settings = {
+    _state: { keys: {}, configs: [] },
+
+    async render() {
+      const view = document.getElementById('view');
+      view.innerHTML =
+        '<div class="view-header"><h1>Settings</h1></div>' +
+        '<div id="settings-keys"><div class="loading-shell">Loading…</div></div>' +
+        '<div id="settings-ai"></div>' +
+        '<div id="settings-general"></div>';
+
+      await Views.Settings._load();
+    },
+
+    async _load() {
+      try {
+        const [keys, configs] = await Promise.all([
+          Api.call('api_settings_aiKeyStatus'),
+          Api.call('api_configs_list')
+        ]);
+        Views.Settings._state.keys = keys;
+        Views.Settings._state.configs = configs;
+        Views.Settings._renderKeys();
+        Views.Settings._renderAi();
+        Views.Settings._renderGeneral();
+      } catch (e) {
+        document.getElementById('settings-keys').innerHTML =
+          '<div class="card danger">' + UI.escapeHtml(e.message) + '</div>';
+      }
+    },
+
+    // ---------- AI keys ----------
+
+    _renderKeys() {
+      const providerInfo = {
+        groq:       { name: 'Groq',       hint: 'console.groq.com — generous free tier' },
+        openai:     { name: 'OpenAI',     hint: 'platform.openai.com — paid' },
+        anthropic:  { name: 'Anthropic',  hint: 'console.anthropic.com — paid, Claude models' },
+        gemini:     { name: 'Gemini',     hint: 'aistudio.google.com — free tier available' },
+        openrouter: { name: 'OpenRouter', hint: 'openrouter.ai — pay-as-you-go aggregator' }
+      };
+      const root = document.getElementById('settings-keys');
+      const k = Views.Settings._state.keys;
+      root.innerHTML =
+        '<div class="card">' +
+          '<h2>AI provider keys</h2>' +
+          '<p class="muted tiny">Keys are stored in Apps Script properties — never written to the workbook or exports. Set at least one to enable AI features.</p>' +
+          '<table class="data" style="margin-top:8px">' +
+            '<thead><tr><th>Provider</th><th>Key</th><th>Where to get</th><th>Actions</th></tr></thead>' +
+            '<tbody>' +
+              Object.keys(providerInfo).map(prov => {
+                const info = providerInfo[prov];
+                const status = k[prov] || { set: false, masked: '' };
+                return '<tr>' +
+                  '<td><strong>' + info.name + '</strong></td>' +
+                  '<td>' + (status.set
+                    ? '<code class="tiny">' + UI.escapeHtml(status.masked) + '</code> <span class="badge badge-success">set</span>'
+                    : '<span class="muted">(not set)</span>') + '</td>' +
+                  '<td class="tiny muted">' + UI.escapeHtml(info.hint) + '</td>' +
+                  '<td>' +
+                    '<button class="btn btn-link" data-set="' + prov + '">' +
+                      (status.set ? 'Update' : 'Set') + '</button>' +
+                    (status.set ? ' <button class="btn btn-link danger" data-clear="' + prov + '">Clear</button>' : '') +
+                  '</td>' +
+                '</tr>';
+              }).join('') +
+            '</tbody>' +
+          '</table>' +
+        '</div>';
+
+      root.querySelectorAll('[data-set]').forEach(b => {
+        b.addEventListener('click', async () => {
+          const prov = b.getAttribute('data-set');
+          const key = await UI.prompt({
+            title: 'Set ' + prov + ' API key',
+            label: 'API key (paste from provider dashboard)',
+            value: '',
+            okLabel: 'Save'
+          });
+          if (!key) return;
+          try {
+            await Api.call('api_settings_setApiKey', { provider: prov, key });
+            UI.toast(prov + ' key saved');
+            Views.Settings._load();
+          } catch (e) { UI.toast(e.message, 'danger'); }
+        });
+      });
+      root.querySelectorAll('[data-clear]').forEach(b => {
+        b.addEventListener('click', async () => {
+          const prov = b.getAttribute('data-clear');
+          const ok = await UI.confirm({
+            title: 'Clear key',
+            message: 'Remove the ' + prov + ' key? AI features that need it will stop working.',
+            danger: true
+          });
+          if (!ok) return;
+          try {
+            await Api.call('api_settings_clearApiKey', { provider: prov });
+            UI.toast(prov + ' key cleared');
+            Views.Settings._load();
+          } catch (e) { UI.toast(e.message, 'danger'); }
+        });
+      });
+    },
+
+    // ---------- AI features ----------
+
+    _renderAi() {
+      const root = document.getElementById('settings-ai');
+      const configs = Views.Settings._state.configs;
+      const byKey = {};
+      configs.forEach(c => { byKey[c.Category + '.' + c.Key] = c; });
+      const val = k => byKey[k] ? State.parseConfig(byKey[k]) : '';
+
+      root.innerHTML =
+        '<div class="card">' +
+          '<h2>AI features</h2>' +
+          '<div class="form-row">' +
+            Views.Settings._toggle('features.ai.enabled',    'Enable AI features (master switch)', val('features.ai.enabled')) +
+            Views.Settings._toggle('features.ai.draft',      'Enable Draft with AI',               val('features.ai.draft')) +
+            Views.Settings._toggle('features.ai.paraphrase', 'Enable Paraphrase',                  val('features.ai.paraphrase')) +
+          '</div>' +
+          '<div class="form-row">' +
+            '<div class="form-field"><label>Default provider</label>' +
+              '<select data-config="ai.defaultProvider">' +
+                ['groq','openai','anthropic','gemini','openrouter'].map(p =>
+                  '<option value="' + p + '"' + (val('ai.defaultProvider') === p ? ' selected' : '') + '>' + p + '</option>'
+                ).join('') +
+              '</select>' +
+            '</div>' +
+            Views.Settings._numField('ai.monthlyWarningUSD', 'Monthly warning (USD)', val('ai.monthlyWarningUSD')) +
+            Views.Settings._numField('ai.monthlyHardCapUSD', 'Monthly hard cap (USD)', val('ai.monthlyHardCapUSD')) +
+            Views.Settings._numField('ai.maxTokensOutput',   'Max output tokens', val('ai.maxTokensOutput')) +
+            Views.Settings._numField('ai.temperature',       'Temperature', val('ai.temperature'), { step: '0.1' }) +
+            Views.Settings._numField('ai.timeoutSec',        'Timeout (sec)', val('ai.timeoutSec')) +
+          '</div>' +
+          '<h3 style="margin-top:16px">Models per provider</h3>' +
+          '<div class="form-row">' +
+            ['groq','openai','anthropic','gemini','openrouter'].map(p =>
+              Views.Settings._textField('ai.model.' + p, 'Model — ' + p, val('ai.model.' + p))
+            ).join('') +
+          '</div>' +
+        '</div>';
+
+      Views.Settings._wireConfigInputs(root);
+    },
+
+    // ---------- General ----------
+
+    _renderGeneral() {
+      const root = document.getElementById('settings-general');
+      const configs = Views.Settings._state.configs;
+      const byKey = {};
+      configs.forEach(c => { byKey[c.Category + '.' + c.Key] = c; });
+      const val = k => byKey[k] ? State.parseConfig(byKey[k]) : '';
+
+      root.innerHTML =
+        '<div class="card">' +
+          '<h2>General</h2>' +
+          '<div class="form-row">' +
+            Views.Settings._textField('branding.signature', 'Signature', val('branding.signature')) +
+            Views.Settings._textField('branding.fromName',  'From name', val('branding.fromName')) +
+          '</div>' +
+          '<div class="form-row">' +
+            Views.Settings._textField('system.timezone', 'Timezone', val('system.timezone')) +
+            Views.Settings._numField('limits.maxMessageLength', 'Max message length', val('limits.maxMessageLength')) +
+            Views.Settings._numField('limits.maxQueueSize', 'Max queue size', val('limits.maxQueueSize')) +
+          '</div>' +
+          '<p class="tiny muted">Schema version: ' + UI.escapeHtml(String(val('system.schemaVersion'))) + '</p>' +
+        '</div>';
+
+      Views.Settings._wireConfigInputs(root);
+    },
+
+    // ---------- Field helpers ----------
+
+    _toggle(key, label, value) {
+      return '<div class="form-field"><label class="checkbox-label">' +
+        '<input type="checkbox" data-config="' + key + '" data-type="boolean"' +
+          (value ? ' checked' : '') + '> ' + UI.escapeHtml(label) +
+      '</label></div>';
+    },
+
+    _numField(key, label, value, extra) {
+      const step = extra && extra.step ? ' step="' + extra.step + '"' : '';
+      return '<div class="form-field"><label>' + UI.escapeHtml(label) + '</label>' +
+        '<input type="number"' + step + ' data-config="' + key + '" data-type="number" value="' +
+          UI.escapeAttr(String(value == null ? '' : value)) + '">' +
+      '</div>';
+    },
+
+    _textField(key, label, value) {
+      return '<div class="form-field"><label>' + UI.escapeHtml(label) + '</label>' +
+        '<input type="text" data-config="' + key + '" value="' +
+          UI.escapeAttr(String(value == null ? '' : value)) + '">' +
+      '</div>';
+    },
+
+    _wireConfigInputs(root) {
+      root.querySelectorAll('[data-config]').forEach(el => {
+        const evt = (el.tagName === 'SELECT' || el.type === 'checkbox') ? 'change' : 'blur';
+        el.addEventListener(evt, async () => {
+          const key = el.getAttribute('data-config');
+          const type = el.getAttribute('data-type');
+          let value;
+          if (type === 'boolean') value = el.checked ? 'true' : 'false';
+          else value = el.value;
+          try {
+            await Api.call('api_configs_set', { key, value });
+            UI.toast('Saved ' + key, 'success');
+            // Refresh in-memory state so other views see updates
+            await State.load();
+          } catch (e) { UI.toast(e.message, 'danger'); }
+        });
+      });
+    }
+  };
+</script>

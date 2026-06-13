@@ -1,0 +1,425 @@
+<script>
+  Views.Compose = {
+    _state: {
+      step: 1,
+      templateUuid: null,
+      adhocBody: '',
+      adhocAiCallUuids: [],
+      wasAiAssisted: false,
+      filter: { course: '', batch: '' },
+      previews: [],
+      campaignTag: ''
+    },
+
+    async render() {
+      // Reset state on entry
+      Views.Compose._state = {
+        step: 1, templateUuid: null, adhocBody: '', adhocAiCallUuids: [],
+        wasAiAssisted: false, filter: { course: '', batch: '' },
+        previews: [], campaignTag: ''
+      };
+      Views.Compose._drawShell();
+      await Views.Compose._renderStep();
+    },
+
+    _drawShell() {
+      const view = document.getElementById('view');
+      view.innerHTML =
+        '<div class="view-header"><h1>Compose</h1></div>' +
+        '<div class="card compose-steps">' +
+          '<div class="step-pills">' +
+            '<span class="step-pill" data-step="1">1. Source</span>' +
+            '<span class="step-pill" data-step="2">2. Filter</span>' +
+            '<span class="step-pill" data-step="3">3. Preview</span>' +
+            '<span class="step-pill" data-step="4">4. Commit</span>' +
+          '</div>' +
+        '</div>' +
+        '<div id="compose-body"></div>';
+    },
+
+    _setActiveStep() {
+      document.querySelectorAll('.step-pill').forEach(el => {
+        const n = Number(el.getAttribute('data-step'));
+        el.classList.toggle('active', n === Views.Compose._state.step);
+        el.classList.toggle('done',   n <  Views.Compose._state.step);
+      });
+    },
+
+    async _renderStep() {
+      Views.Compose._setActiveStep();
+      const s = Views.Compose._state.step;
+      if (s === 1) return Views.Compose._step1();
+      if (s === 2) return Views.Compose._step2();
+      if (s === 3) return Views.Compose._step3();
+      if (s === 4) return Views.Compose._step4();
+    },
+
+    // ---------- Step 1: pick template or draft with AI ----------
+
+    async _step1() {
+      const body = document.getElementById('compose-body');
+      body.innerHTML = '<div class="loading-shell">Loading templates…</div>';
+      try {
+        const templates = await Api.call('api_templates_list', { active: true });
+        const aiOn  = !!State.configs['features.ai.enabled'];
+        const aiDr  = !!State.configs['features.ai.draft'];
+
+        body.innerHTML =
+          '<div class="card">' +
+            '<h2>Pick a template</h2>' +
+            (templates.length
+              ? '<div class="template-grid">' + templates.map(t =>
+                  '<div class="template-card" data-uuid="' + UI.escapeAttr(t.UUID) + '">' +
+                    '<div class="template-card-head">' +
+                      '<strong>' + UI.escapeHtml(t.Name) + '</strong>' +
+                      (t.Source === 'ai-drafted' ? ' ' + UI.aiBadge('AI') : '') +
+                    '</div>' +
+                    (t.Description ? '<div class="tiny muted">' + UI.escapeHtml(t.Description) + '</div>' : '') +
+                    '<div class="tiny muted" style="margin-top:6px">Used ' + UI.escapeHtml(String(t.UsageCount || 0)) + ' times</div>' +
+                  '</div>'
+                ).join('') + '</div>'
+              : UI.empty('No active templates. Create one in Templates.', '')) +
+          '</div>' +
+          (aiOn && aiDr
+            ? '<div class="card ai-block">' +
+                '<h2>' + UI.aiBadge('Or draft with AI') + '</h2>' +
+                '<p class="muted">Describe what you want to say. AI will produce a draft you can use once or save as a template.</p>' +
+                '<button class="btn btn-ai" id="cmp-draft-ai">Open AI draft</button>' +
+              '</div>'
+            : '');
+
+        body.querySelectorAll('.template-card').forEach(el => {
+          el.addEventListener('click', () => {
+            Views.Compose._state.templateUuid = el.getAttribute('data-uuid');
+            Views.Compose._state.adhocBody = '';
+            Views.Compose._state.adhocAiCallUuids = [];
+            Views.Compose._state.wasAiAssisted = false;
+            Views.Compose._state.step = 2;
+            Views.Compose._renderStep();
+          });
+        });
+        const draftBtn = document.getElementById('cmp-draft-ai');
+        if (draftBtn) draftBtn.addEventListener('click', () => Views.Compose._openDraftModal());
+      } catch (e) {
+        UI.toast('Failed to load templates: ' + e.message, 'danger');
+      }
+    },
+
+    _openDraftModal() {
+      UI.modal({
+        title: '✨ Draft with AI',
+        width: 640,
+        bodyHtml:
+          '<div class="form-field"><label>Tone</label>' +
+            '<select id="ai-tone">' +
+              '<option value="friendly">Friendly</option>' +
+              '<option value="formal">Formal</option>' +
+              '<option value="concise">Concise</option>' +
+              '<option value="encouraging">Encouraging</option>' +
+            '</select>' +
+          '</div>' +
+          '<div class="form-field"><label>Brief — what should the message say?</label>' +
+            '<textarea id="ai-brief" rows="4" placeholder="e.g. Remind Cybersecurity batch about tomorrow\'s practical exam"></textarea>' +
+          '</div>' +
+          '<div id="ai-draft-output"></div>',
+        footerHtml:
+          '<button class="btn" data-cancel>Cancel</button>' +
+          '<button class="btn btn-ai" id="ai-generate">Generate draft</button>',
+        onMount(el) {
+          el.querySelector('[data-cancel]').addEventListener('click', UI.closeModal);
+          el.querySelector('#ai-generate').addEventListener('click', async () => {
+            const tone = el.querySelector('#ai-tone').value;
+            const brief = el.querySelector('#ai-brief').value.trim();
+            if (!brief) { UI.toast('Enter a brief first', 'danger'); return; }
+            const out = el.querySelector('#ai-draft-output');
+            out.innerHTML = '<div class="muted">Generating…</div>';
+            try {
+              const res = await Api.call('api_ai_draft', { brief, tone });
+              out.innerHTML =
+                '<div class="ai-block" style="margin-top:12px">' +
+                  '<div class="tiny muted">' + UI.aiBadge(res.provider + ' · ' + res.model) +
+                    ' · ' + UI.formatCost(res.estCost) + ' · ' + res.latencyMs + 'ms</div>' +
+                  '<textarea id="ai-draft-body" rows="8" style="margin-top:8px">' +
+                    UI.escapeHtml(res.draftBody) + '</textarea>' +
+                  '<div class="row" style="margin-top:8px; justify-content:flex-end; gap:8px">' +
+                    '<button class="btn" id="ai-use-once">Use once</button>' +
+                    '<button class="btn btn-primary" id="ai-save-as">Save as template</button>' +
+                  '</div>' +
+                '</div>';
+              const callUuid = res.callUuid;
+              out.querySelector('#ai-use-once').addEventListener('click', () => {
+                Views.Compose._state.adhocBody = out.querySelector('#ai-draft-body').value;
+                Views.Compose._state.adhocAiCallUuids = [callUuid];
+                Views.Compose._state.wasAiAssisted = true;
+                Views.Compose._state.templateUuid = null;
+                UI.closeModal();
+                Views.Compose._state.step = 2;
+                Views.Compose._renderStep();
+              });
+              out.querySelector('#ai-save-as').addEventListener('click', async () => {
+                const name = await UI.prompt({ title: 'Save as template', label: 'Template name', value: 'AI draft — ' + new Date().toISOString().slice(0,10) });
+                if (!name) return;
+                try {
+                  const created = await Api.call('api_templates_create', {
+                    Name: name,
+                    Description: 'Drafted by AI: ' + brief.slice(0, 100),
+                    Body: out.querySelector('#ai-draft-body').value,
+                    SupportedCourses: '*',
+                    Source: 'ai-drafted',
+                    Active: true
+                  });
+                  UI.toast('Template saved');
+                  Views.Compose._state.templateUuid = created.UUID;
+                  Views.Compose._state.adhocBody = '';
+                  Views.Compose._state.wasAiAssisted = false;
+                  UI.closeModal();
+                  Views.Compose._state.step = 2;
+                  Views.Compose._renderStep();
+                } catch (e) {
+                  UI.toast('Save failed: ' + e.message, 'danger');
+                }
+              });
+            } catch (e) {
+              out.innerHTML = '<div class="danger">' + UI.escapeHtml(e.message) + '</div>';
+            }
+          });
+        }
+      });
+    },
+
+    // ---------- Step 2: filter ----------
+
+    async _step2() {
+      const body = document.getElementById('compose-body');
+      body.innerHTML = '<div class="loading-shell">Loading…</div>';
+      try {
+        const [courses, batches] = await Promise.all([
+          Api.call('api_students_courses'),
+          Api.call('api_students_batches')
+        ]);
+        body.innerHTML =
+          '<div class="card">' +
+            '<h2>Filter recipients</h2>' +
+            '<p class="muted">Pick a course and/or batch. Leave blank to message all active students.</p>' +
+            '<div class="form-row">' +
+              '<div class="form-field"><label>Course</label>' +
+                '<select id="cmp-course"><option value="">— Any —</option>' +
+                  courses.map(c => '<option>' + UI.escapeHtml(c) + '</option>').join('') +
+                '</select>' +
+              '</div>' +
+              '<div class="form-field"><label>Batch</label>' +
+                '<select id="cmp-batch"><option value="">— Any —</option>' +
+                  batches.map(b => '<option>' + UI.escapeHtml(b) + '</option>').join('') +
+                '</select>' +
+              '</div>' +
+            '</div>' +
+            '<div class="row" style="justify-content:space-between; margin-top:16px">' +
+              '<button class="btn" id="cmp-back">← Back</button>' +
+              '<button class="btn btn-primary" id="cmp-next">Next: preview →</button>' +
+            '</div>' +
+          '</div>';
+        document.getElementById('cmp-back').addEventListener('click', () => {
+          Views.Compose._state.step = 1;
+          Views.Compose._renderStep();
+        });
+        document.getElementById('cmp-next').addEventListener('click', () => {
+          Views.Compose._state.filter.course = document.getElementById('cmp-course').value || '';
+          Views.Compose._state.filter.batch  = document.getElementById('cmp-batch').value  || '';
+          Views.Compose._state.step = 3;
+          Views.Compose._renderStep();
+        });
+      } catch (e) {
+        UI.toast('Failed to load filters: ' + e.message, 'danger');
+      }
+    },
+
+    // ---------- Step 3: preview ----------
+
+    async _step3() {
+      const body = document.getElementById('compose-body');
+      body.innerHTML = '<div class="loading-shell">Generating previews…</div>';
+      try {
+        const s = Views.Compose._state;
+        let previews;
+        if (s.templateUuid) {
+          previews = await Api.call('api_compose_preview', {
+            templateUuid: s.templateUuid,
+            filter: s.filter
+          });
+        } else {
+          previews = await Api.call('api_compose_previewAdhoc', {
+            body: s.adhocBody,
+            filter: s.filter,
+            wasAiAssisted: s.wasAiAssisted,
+            aiCallUuids: s.adhocAiCallUuids
+          });
+        }
+        Views.Compose._state.previews = previews;
+
+        if (!previews.length) {
+          body.innerHTML =
+            '<div class="card">' + UI.empty('No active students match your filter.', '') +
+              '<div class="row" style="justify-content:space-between; margin-top:12px">' +
+                '<button class="btn" id="cmp-back">← Back</button>' +
+              '</div>' +
+            '</div>';
+          document.getElementById('cmp-back').addEventListener('click', () => {
+            Views.Compose._state.step = 2;
+            Views.Compose._renderStep();
+          });
+          return;
+        }
+
+        const aiOn = !!State.configs['features.ai.enabled'];
+        const aiPp = !!State.configs['features.ai.paraphrase'];
+
+        body.innerHTML =
+          '<div class="card">' +
+            '<div class="row" style="justify-content:space-between; align-items:center">' +
+              '<h2 style="margin:0">' + previews.length + ' recipient' + (previews.length === 1 ? '' : 's') + '</h2>' +
+              (aiOn && aiPp
+                ? '<button class="btn btn-ai" id="cmp-paraphrase-all">✨ Paraphrase all</button>'
+                : '') +
+            '</div>' +
+            '<div id="cmp-preview-list" style="margin-top:12px">' +
+              previews.map((p, i) => Views.Compose._previewCardHtml(p, i)).join('') +
+            '</div>' +
+            '<div class="row" style="justify-content:space-between; margin-top:16px">' +
+              '<button class="btn" id="cmp-back">← Back</button>' +
+              '<button class="btn btn-primary" id="cmp-next">Next: commit →</button>' +
+            '</div>' +
+          '</div>';
+
+        document.getElementById('cmp-back').addEventListener('click', () => {
+          Views.Compose._state.step = 2;
+          Views.Compose._renderStep();
+        });
+        document.getElementById('cmp-next').addEventListener('click', () => {
+          Views.Compose._state.step = 4;
+          Views.Compose._renderStep();
+        });
+
+        const pAll = document.getElementById('cmp-paraphrase-all');
+        if (pAll) pAll.addEventListener('click', () => Views.Compose._openParaphraseAll());
+      } catch (e) {
+        body.innerHTML = '<div class="card"><p class="danger">' + UI.escapeHtml(e.message) + '</p>' +
+          '<button class="btn" onclick="Views.Compose._state.step=2;Views.Compose._renderStep()">← Back</button></div>';
+      }
+    },
+
+    _previewCardHtml(p, i) {
+      const ai = p.wasAiAssisted ? ' ' + UI.aiBadge('AI') : '';
+      return '<div class="preview-card" data-index="' + i + '">' +
+        '<div class="preview-head">' +
+          '<strong>' + UI.escapeHtml(p.student.Name) + '</strong> ' +
+          '<span class="tiny muted">' + UI.escapeHtml(p.student.TeamsEmail) + ' · ' +
+            UI.escapeHtml(p.student.Course || '') + ' / ' + UI.escapeHtml(p.student.Batch || '') +
+          '</span>' + ai +
+        '</div>' +
+        '<pre class="preview-body">' + UI.escapeHtml(p.rendered) + '</pre>' +
+      '</div>';
+    },
+
+    _openParaphraseAll() {
+      UI.modal({
+        title: '✨ Paraphrase all messages',
+        width: 520,
+        bodyHtml:
+          '<div class="form-field"><label>Tone</label>' +
+            '<select id="pa-tone">' +
+              '<option value="friendly">Friendly</option>' +
+              '<option value="formal">Formal</option>' +
+              '<option value="concise">Concise</option>' +
+              '<option value="encouraging">Encouraging</option>' +
+            '</select>' +
+          '</div>' +
+          '<div class="form-field"><label>Target language (optional)</label>' +
+            '<input id="pa-lang" type="text" placeholder="e.g. Nepali, leave blank for English"></div>' +
+          '<p class="tiny muted">Note: each message is a separate AI call. ' +
+            Views.Compose._state.previews.length + ' calls will be made.</p>',
+        footerHtml:
+          '<button class="btn" data-cancel>Cancel</button>' +
+          '<button class="btn btn-ai" id="pa-run">Run paraphrase</button>',
+        onMount(el) {
+          el.querySelector('[data-cancel]').addEventListener('click', UI.closeModal);
+          el.querySelector('#pa-run').addEventListener('click', async () => {
+            const tone = el.querySelector('#pa-tone').value;
+            const lang = el.querySelector('#pa-lang').value.trim();
+            UI.closeModal();
+            UI.toast('Paraphrasing… this may take a minute', 'info');
+            try {
+              const texts = Views.Compose._state.previews.map(p => p.rendered);
+              const res = await Api.call('api_ai_paraphraseBatch', { texts, tone, targetLanguage: lang });
+              let okCount = 0, failCount = 0;
+              res.results.forEach(r => {
+                if (r.ok) {
+                  const p = Views.Compose._state.previews[r.index];
+                  p.rendered = r.result.paraphrased;
+                  p.wasAiAssisted = true;
+                  p.aiCallUuids = (p.aiCallUuids || []).concat([r.result.callUuid]);
+                  okCount++;
+                } else {
+                  failCount++;
+                }
+              });
+              UI.toast('Paraphrased ' + okCount + '/' + (okCount + failCount) +
+                (failCount ? ' — ' + failCount + ' failed' : ''),
+                failCount ? 'danger' : 'success');
+              // Re-render the list
+              const list = document.getElementById('cmp-preview-list');
+              if (list) {
+                list.innerHTML = Views.Compose._state.previews
+                  .map((p, i) => Views.Compose._previewCardHtml(p, i)).join('');
+              }
+            } catch (e) {
+              UI.toast('Paraphrase failed: ' + e.message, 'danger');
+            }
+          });
+        }
+      });
+    },
+
+    // ---------- Step 4: commit ----------
+
+    async _step4() {
+      const body = document.getElementById('compose-body');
+      const s = Views.Compose._state;
+      body.innerHTML =
+        '<div class="card">' +
+          '<h2>Commit to queue</h2>' +
+          '<p>' + s.previews.length + ' message' + (s.previews.length === 1 ? '' : 's') +
+            ' will be added to your queue. From the Queue page you\'ll open each in Teams and mark it sent.</p>' +
+          '<div class="form-field"><label>Campaign tag (optional)</label>' +
+            '<input id="cmp-tag" type="text" placeholder="e.g. homework-week-5"></div>' +
+          '<div class="row" style="justify-content:space-between; margin-top:16px">' +
+            '<button class="btn" id="cmp-back">← Back</button>' +
+            '<button class="btn btn-primary" id="cmp-commit">Commit ' + s.previews.length + ' to queue</button>' +
+          '</div>' +
+        '</div>';
+      document.getElementById('cmp-back').addEventListener('click', () => {
+        Views.Compose._state.step = 3;
+        Views.Compose._renderStep();
+      });
+      document.getElementById('cmp-commit').addEventListener('click', async () => {
+        const tag = document.getElementById('cmp-tag').value.trim();
+        const btn = document.getElementById('cmp-commit');
+        btn.disabled = true;
+        btn.textContent = 'Committing…';
+        try {
+          const res = await Api.call('api_compose_commit', {
+            previews: s.previews,
+            templateUuid: s.templateUuid,
+            campaignTag: tag
+          });
+          (res.warnings || []).forEach(w => UI.toast(w, 'info'));
+          UI.toast('Queued ' + res.created + ' messages');
+          Router.navigate('/queue');
+        } catch (e) {
+          UI.toast('Commit failed: ' + e.message, 'danger');
+          btn.disabled = false;
+          btn.textContent = 'Commit ' + s.previews.length + ' to queue';
+        }
+      });
+    }
+  };
+</script>

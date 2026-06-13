@@ -1,0 +1,239 @@
+<script>
+  Views.Students = {
+    _state: { q: '', course: '', batch: '', active: '' },
+
+    async render() {
+      const view = document.getElementById('view');
+      view.innerHTML = Views.Students._shell();
+      Views.Students._bindHeader();
+      await Views.Students._refresh();
+    },
+
+    _shell() {
+      return (
+        '<div class="view-header">' +
+          '<h1>Students</h1>' +
+          '<div class="row">' +
+            '<button class="btn" id="stu-export">Export CSV</button>' +
+            '<button class="btn" id="stu-import">Import CSV</button>' +
+            '<button class="btn btn-primary" id="stu-add">Add student</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="filter-row card" style="padding:12px">' +
+          '<div class="form-field"><label>Search</label><input id="stu-q" type="text" placeholder="Name, email, tag…"></div>' +
+          '<div class="form-field"><label>Course</label><select id="stu-course"><option value="">All</option></select></div>' +
+          '<div class="form-field"><label>Batch</label><select id="stu-batch"><option value="">All</option></select></div>' +
+          '<div class="form-field"><label>Active</label><select id="stu-active"><option value="">All</option><option value="true">Active only</option><option value="false">Inactive only</option></select></div>' +
+        '</div>' +
+        '<div id="stu-list"><div class="loading-shell">Loading…</div></div>'
+      );
+    },
+
+    async _refresh() {
+      const list = document.getElementById('stu-list');
+      list.innerHTML = UI.skeleton(4);
+      try {
+        const filter = {};
+        const s = Views.Students._state;
+        if (s.q) filter.q = s.q;
+        if (s.course) filter.course = s.course;
+        if (s.batch)  filter.batch  = s.batch;
+        if (s.active === 'true')  filter.active = true;
+        if (s.active === 'false') filter.active = false;
+
+        const [rows, courses, batches] = await Promise.all([
+          Api.call('api_students_list', filter),
+          Api.call('api_students_courses'),
+          Api.call('api_students_batches')
+        ]);
+
+        // Populate dropdowns once
+        const cSel = document.getElementById('stu-course');
+        const bSel = document.getElementById('stu-batch');
+        const cur = { c: cSel.value, b: bSel.value };
+        cSel.innerHTML = '<option value="">All</option>' +
+          courses.map(c => '<option value="' + UI.escapeAttr(c) + '"' + (c === cur.c ? ' selected' : '') + '>' + UI.escapeHtml(c) + '</option>').join('');
+        bSel.innerHTML = '<option value="">All</option>' +
+          batches.map(b => '<option value="' + UI.escapeAttr(b) + '"' + (b === cur.b ? ' selected' : '') + '>' + UI.escapeHtml(b) + '</option>').join('');
+
+        if (!rows.length) {
+          list.innerHTML = UI.empty('No students match these filters.',
+            '<button class="btn btn-primary" id="empty-add">Add the first one</button>');
+          const ea = document.getElementById('empty-add');
+          if (ea) ea.addEventListener('click', () => Views.Students._openForm(null));
+          return;
+        }
+
+        const html =
+          '<div class="table-wrap"><table class="data">' +
+            '<thead><tr>' +
+              '<th>Name</th><th>Teams email</th><th>Course</th><th>Batch</th><th>Tags</th><th>Status</th><th></th>' +
+            '</tr></thead>' +
+            '<tbody>' +
+            rows.map(r =>
+              '<tr data-uuid="' + UI.escapeAttr(r.UUID) + '">' +
+                '<td><strong>' + UI.escapeHtml(r.Name) + '</strong>' +
+                  (r.FullName && r.FullName !== r.Name ? '<div class="tiny">' + UI.escapeHtml(r.FullName) + '</div>' : '') +
+                '</td>' +
+                '<td class="mono">' + UI.escapeHtml(r.TeamsEmail) + '</td>' +
+                '<td>' + UI.escapeHtml(r.Course) + '</td>' +
+                '<td>' + UI.escapeHtml(r.Batch) + '</td>' +
+                '<td>' + UI.escapeHtml(r.Tags) + '</td>' +
+                '<td>' + (String(r.Active) === 'true' || r.Active === true ? '<span class="badge badge-success">Active</span>' : '<span class="badge">Inactive</span>') + '</td>' +
+                '<td class="actions">' +
+                  '<button class="btn btn-sm" data-edit>Edit</button> ' +
+                  '<button class="btn btn-sm btn-danger" data-del>Deactivate</button>' +
+                '</td>' +
+              '</tr>'
+            ).join('') +
+            '</tbody></table></div>';
+
+        list.innerHTML = html;
+        list.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', e => {
+          const uuid = e.target.closest('tr').dataset.uuid;
+          Views.Students._openForm(uuid);
+        }));
+        list.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', async e => {
+          const uuid = e.target.closest('tr').dataset.uuid;
+          const ok = await UI.confirm({ title: 'Deactivate', message: 'Soft-delete this student? They can be reactivated later.', danger: true, okLabel: 'Deactivate' });
+          if (!ok) return;
+          try {
+            await Api.call('api_students_softDelete', { uuid });
+            UI.toast('Deactivated', 'success');
+            Views.Students._refresh();
+          } catch (err) { UI.toast(err.message, 'danger'); }
+        }));
+      } catch (e) {
+        list.innerHTML = '<div class="card"><p>Error: ' + UI.escapeHtml(e.message) + '</p></div>';
+      }
+    },
+
+    _bindHeader() {
+      document.getElementById('stu-add').addEventListener('click', () => Views.Students._openForm(null));
+      document.getElementById('stu-import').addEventListener('click', () => Views.Students._openImport());
+      document.getElementById('stu-export').addEventListener('click', async () => {
+        try {
+          const csv = await Api.call('api_students_exportCsv');
+          Views.Students._downloadCsv('students.csv', csv);
+        } catch (e) { UI.toast(e.message, 'danger'); }
+      });
+      let qTimer;
+      document.getElementById('stu-q').addEventListener('input', e => {
+        Views.Students._state.q = e.target.value;
+        clearTimeout(qTimer);
+        qTimer = setTimeout(() => Views.Students._refresh(), 250);
+      });
+      document.getElementById('stu-course').addEventListener('change', e => { Views.Students._state.course = e.target.value; Views.Students._refresh(); });
+      document.getElementById('stu-batch').addEventListener('change',  e => { Views.Students._state.batch  = e.target.value; Views.Students._refresh(); });
+      document.getElementById('stu-active').addEventListener('change', e => { Views.Students._state.active = e.target.value; Views.Students._refresh(); });
+    },
+
+    async _openForm(uuid) {
+      let existing = null;
+      if (uuid) {
+        try { existing = await Api.call('api_students_get', { uuid }); }
+        catch (e) { UI.toast(e.message, 'danger'); return; }
+      }
+      const s = existing || {};
+      UI.modal({
+        title: existing ? 'Edit student' : 'Add student',
+        bodyHtml:
+          '<div class="form-row">' +
+            '<div class="form-field"><label>Name *</label><input id="f-name" type="text" value="' + UI.escapeAttr(s.Name || '') + '"></div>' +
+            '<div class="form-field"><label>Full name</label><input id="f-fullname" type="text" value="' + UI.escapeAttr(s.FullName || '') + '"></div>' +
+          '</div>' +
+          '<div class="form-row">' +
+            '<div class="form-field"><label>Teams email *</label><input id="f-temail" type="email" value="' + UI.escapeAttr(s.TeamsEmail || '') + '"></div>' +
+            '<div class="form-field"><label>Personal email</label><input id="f-pemail" type="email" value="' + UI.escapeAttr(s.PersonalEmail || '') + '"></div>' +
+          '</div>' +
+          '<div class="form-row">' +
+            '<div class="form-field"><label>Course *</label><input id="f-course" type="text" value="' + UI.escapeAttr(s.Course || '') + '"></div>' +
+            '<div class="form-field"><label>Batch *</label><input id="f-batch" type="text" value="' + UI.escapeAttr(s.Batch || '') + '"></div>' +
+          '</div>' +
+          '<div class="form-row">' +
+            '<div class="form-field"><label>Phone</label><input id="f-phone" type="text" value="' + UI.escapeAttr(s.Phone || '') + '"></div>' +
+            '<div class="form-field"><label>Joined date</label><input id="f-joined" type="date" value="' + UI.escapeAttr(String(s.JoinedDate || '').slice(0,10)) + '"></div>' +
+          '</div>' +
+          '<div class="form-field"><label>Homework (used by {homework})</label><input id="f-hw" type="text" value="' + UI.escapeAttr(s.Homework || '') + '"></div>' +
+          '<div class="form-field"><label>Tags (comma separated)</label><input id="f-tags" type="text" value="' + UI.escapeAttr(s.Tags || '') + '"></div>' +
+          '<div class="form-field"><label>Notes</label><textarea id="f-notes" style="min-height:60px">' + UI.escapeHtml(s.Notes || '') + '</textarea></div>' +
+          '<label class="row" style="gap:8px"><input id="f-active" type="checkbox" class="toggle" ' + (existing === null || s.Active === true || String(s.Active) === 'true' ? 'checked' : '') + '> Active</label>',
+        footerHtml:
+          '<button class="btn" data-cancel>Cancel</button>' +
+          '<button class="btn btn-primary" data-save>Save</button>',
+        onMount(el) {
+          el.querySelector('[data-cancel]').addEventListener('click', UI.closeModal);
+          el.querySelector('[data-save]').addEventListener('click', async () => {
+            const payload = {
+              Name: el.querySelector('#f-name').value,
+              FullName: el.querySelector('#f-fullname').value,
+              TeamsEmail: el.querySelector('#f-temail').value,
+              PersonalEmail: el.querySelector('#f-pemail').value,
+              Course: el.querySelector('#f-course').value,
+              Batch: el.querySelector('#f-batch').value,
+              Phone: el.querySelector('#f-phone').value,
+              JoinedDate: el.querySelector('#f-joined').value,
+              Homework: el.querySelector('#f-hw').value,
+              Tags: el.querySelector('#f-tags').value,
+              Notes: el.querySelector('#f-notes').value,
+              Active: el.querySelector('#f-active').checked
+            };
+            try {
+              if (existing) await Api.call('api_students_update', { uuid: existing.UUID, patch: payload });
+              else          await Api.call('api_students_create', payload);
+              UI.closeModal();
+              UI.toast('Saved', 'success');
+              Views.Students._refresh();
+            } catch (e) { UI.toast(e.message, 'danger'); }
+          });
+        }
+      });
+    },
+
+    _openImport() {
+      UI.modal({
+        title: 'Import students from CSV',
+        bodyHtml:
+          '<p class="muted">Required columns: <code>Name</code>, <code>TeamsEmail</code>, <code>Course</code>, <code>Batch</code>. Optional: FullName, PersonalEmail, Phone, JoinedDate, Homework, Tags, Notes, Active.</p>' +
+          '<div class="form-field"><label>CSV content</label><textarea id="imp-csv" placeholder="Paste CSV text here, or click Choose file..."></textarea></div>' +
+          '<input type="file" id="imp-file" accept=".csv,text/csv" />' +
+          '<label class="row" style="gap:8px; margin-top:8px"><input type="checkbox" id="imp-update" class="toggle"> Update existing matches by Teams email</label>',
+        footerHtml:
+          '<button class="btn" data-cancel>Cancel</button>' +
+          '<button class="btn btn-primary" data-run>Import</button>',
+        onMount(el) {
+          el.querySelector('#imp-file').addEventListener('change', e => {
+            const f = e.target.files[0];
+            if (!f) return;
+            const r = new FileReader();
+            r.onload = ev => { el.querySelector('#imp-csv').value = ev.target.result; };
+            r.readAsText(f);
+          });
+          el.querySelector('[data-cancel]').addEventListener('click', UI.closeModal);
+          el.querySelector('[data-run]').addEventListener('click', async () => {
+            const csv = el.querySelector('#imp-csv').value;
+            const updateExisting = el.querySelector('#imp-update').checked;
+            if (!csv.trim()) { UI.toast('Paste or select a CSV file first', 'warning'); return; }
+            try {
+              const r = await Api.call('api_students_importCsv', { csv, options: { updateExisting } });
+              UI.closeModal();
+              const msg = 'Created ' + r.created + ', updated ' + r.updated + ', skipped ' + r.skipped +
+                          (r.errors.length ? ', errors ' + r.errors.length : '');
+              UI.toast(msg, r.errors.length ? 'warning' : 'success');
+              Views.Students._refresh();
+            } catch (e) { UI.toast(e.message, 'danger'); }
+          });
+        }
+      });
+    },
+
+    _downloadCsv(filename, csv) {
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = filename;
+      document.body.appendChild(a); a.click();
+      setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 0);
+    }
+  };
+</script>

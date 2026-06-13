@@ -1,0 +1,262 @@
+<script>
+  Views.Templates = {
+    _state: { selectedUuid: null, list: [] },
+
+    async render() {
+      const view = document.getElementById('view');
+      view.innerHTML =
+        '<div class="view-header"><h1>Templates</h1>' +
+          '<div class="row">' +
+            '<button class="btn btn-primary" id="tpl-new">New template</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="split-pane">' +
+          '<div id="tpl-list-pane"><div class="loading-shell">Loading…</div></div>' +
+          '<div id="tpl-editor-pane" class="card"><p class="muted">Pick a template on the left, or create a new one.</p></div>' +
+        '</div>';
+
+      document.getElementById('tpl-new').addEventListener('click', () => Views.Templates._editEmpty());
+      await Views.Templates._refreshList();
+    },
+
+    async _refreshList() {
+      try {
+        const rows = await Api.call('api_templates_list', {});
+        Views.Templates._state.list = rows;
+        const pane = document.getElementById('tpl-list-pane');
+        if (!rows.length) {
+          pane.innerHTML = UI.empty('No templates yet.', '<button class="btn btn-primary" onclick="Views.Templates._editEmpty()">Create one</button>');
+          return;
+        }
+        pane.innerHTML = '<div class="card" style="padding:0">' +
+          '<table class="data"><thead><tr><th>Name</th><th>Source</th><th>Used</th><th>Active</th></tr></thead><tbody>' +
+          rows.map(t =>
+            '<tr data-uuid="' + UI.escapeAttr(t.UUID) + '" style="cursor:pointer">' +
+              '<td><strong>' + UI.escapeHtml(t.Name) + '</strong>' +
+                (t.Description ? '<div class="tiny">' + UI.escapeHtml(t.Description) + '</div>' : '') +
+              '</td>' +
+              '<td>' + (t.Source === 'ai-drafted' ? UI.aiBadge('AI drafted') : '<span class="badge">manual</span>') + '</td>' +
+              '<td>' + UI.escapeHtml(String(t.UsageCount || 0)) + '</td>' +
+              '<td>' + (String(t.Active) === 'true' || t.Active === true ? '<span class="badge badge-success">Active</span>' : '<span class="badge">Inactive</span>') + '</td>' +
+            '</tr>'
+          ).join('') +
+          '</tbody></table></div>';
+        pane.querySelectorAll('tr[data-uuid]').forEach(tr => {
+          tr.addEventListener('click', () => Views.Templates._edit(tr.dataset.uuid));
+        });
+        if (Views.Templates._state.selectedUuid) {
+          Views.Templates._edit(Views.Templates._state.selectedUuid);
+        }
+      } catch (e) {
+        document.getElementById('tpl-list-pane').innerHTML = '<div class="card">Error: ' + UI.escapeHtml(e.message) + '</div>';
+      }
+    },
+
+    _editEmpty() {
+      Views.Templates._state.selectedUuid = null;
+      Views.Templates._renderEditor({
+        Name: '', Description: '', Body: 'Hello {name},\n\n\n\n{signature}',
+        SupportedCourses: '*', Source: 'manual', Active: true, UsageCount: 0
+      }, false);
+    },
+
+    async _edit(uuid) {
+      Views.Templates._state.selectedUuid = uuid;
+      try {
+        const t = await Api.call('api_templates_get', { uuid });
+        Views.Templates._renderEditor(t, true);
+      } catch (e) { UI.toast(e.message, 'danger'); }
+    },
+
+    _renderEditor(t, isExisting) {
+      const pane = document.getElementById('tpl-editor-pane');
+      pane.innerHTML =
+        '<div class="row" style="justify-content:space-between; align-items:flex-start">' +
+          '<h2 style="margin:0">' + (isExisting ? 'Edit template' : 'New template') + '</h2>' +
+          (State.aiEnabled
+            ? '<button class="btn btn-ai" id="tpl-paraphrase">✨ Paraphrase</button>'
+            : '') +
+        '</div>' +
+        '<div class="form-field"><label>Name *</label><input id="tpl-name" type="text" value="' + UI.escapeAttr(t.Name) + '"></div>' +
+        '<div class="form-field"><label>Description</label><input id="tpl-desc" type="text" value="' + UI.escapeAttr(t.Description) + '"></div>' +
+        '<div class="form-field"><label>Body * <span class="tiny" id="tpl-counter"></span></label>' +
+          '<textarea id="tpl-body" style="min-height:180px">' + UI.escapeHtml(t.Body) + '</textarea></div>' +
+        '<div class="form-row">' +
+          '<div class="form-field"><label>Supported courses</label><input id="tpl-courses" type="text" value="' + UI.escapeAttr(t.SupportedCourses || '*') + '"><div class="form-help">Comma-separated list, or <code>*</code> for any.</div></div>' +
+          '<div class="form-field"><label>Source</label><select id="tpl-source"><option value="manual"' + (t.Source === 'manual' ? ' selected' : '') + '>Manual</option><option value="ai-drafted"' + (t.Source === 'ai-drafted' ? ' selected' : '') + '>AI drafted</option></select></div>' +
+        '</div>' +
+        '<label class="row" style="gap:8px"><input id="tpl-active" type="checkbox" class="toggle" ' + (t.Active === true || String(t.Active) === 'true' ? 'checked' : '') + '> Active</label>' +
+        '<div class="card" style="margin-top:12px; background:var(--color-bg-muted)">' +
+          '<h3 style="margin-top:0">Preview against sample student</h3>' +
+          '<div id="tpl-preview" class="mono" style="white-space:pre-wrap">…</div>' +
+          '<div id="tpl-ph-warn" class="tiny" style="margin-top:8px"></div>' +
+        '</div>' +
+        '<div class="row" style="margin-top:12px; justify-content:flex-end">' +
+          (isExisting ? '<button class="btn btn-danger" id="tpl-delete">Delete</button>' : '') +
+          '<div class="spacer"></div>' +
+          '<button class="btn btn-primary" id="tpl-save">' + (isExisting ? 'Save changes' : 'Create template') + '</button>' +
+        '</div>';
+
+      const body = pane.querySelector('#tpl-body');
+      const refreshPreview = async () => {
+        const txt = body.value;
+        const maxLen = State.configs['limits.maxMessageLength'] || 1500;
+        pane.querySelector('#tpl-counter').textContent = txt.length + ' / ' + maxLen;
+        pane.querySelector('#tpl-counter').style.color = txt.length > maxLen ? 'var(--color-text-danger)' : '';
+        try {
+          const r = await Api.call('api_templates_renderPreview', { body: txt });
+          pane.querySelector('#tpl-preview').textContent = r.rendered;
+        } catch (e) {
+          pane.querySelector('#tpl-preview').textContent = '(' + e.message + ')';
+        }
+        try {
+          const v = await Api.call('api_templates_validate', { body: txt });
+          const warn = pane.querySelector('#tpl-ph-warn');
+          if (v.unknown && v.unknown.length) {
+            warn.innerHTML = '<span class="badge badge-warning">Unknown placeholders</span> ' +
+              v.unknown.map(p => '<code>{' + UI.escapeHtml(p) + '}</code>').join(', ');
+          } else {
+            warn.textContent = 'Placeholders: ' + (v.found && v.found.length ? v.found.map(p => '{' + p + '}').join(', ') : '(none)');
+          }
+        } catch (_) {}
+      };
+      let t1;
+      body.addEventListener('input', () => { clearTimeout(t1); t1 = setTimeout(refreshPreview, 250); });
+      refreshPreview();
+
+      pane.querySelector('#tpl-save').addEventListener('click', async () => {
+        const payload = {
+          Name:             pane.querySelector('#tpl-name').value,
+          Description:      pane.querySelector('#tpl-desc').value,
+          Body:             pane.querySelector('#tpl-body').value,
+          SupportedCourses: pane.querySelector('#tpl-courses').value,
+          Source:           pane.querySelector('#tpl-source').value,
+          Active:           pane.querySelector('#tpl-active').checked
+        };
+        try {
+          if (isExisting) await Api.call('api_templates_update', { uuid: t.UUID, patch: payload });
+          else            await Api.call('api_templates_create', payload);
+          UI.toast('Saved', 'success');
+          Views.Templates._refreshList();
+        } catch (e) { UI.toast(e.message, 'danger'); }
+      });
+
+      if (isExisting) {
+        pane.querySelector('#tpl-delete').addEventListener('click', async () => {
+          const ok = await UI.confirm({ title: 'Delete template', message: 'Permanently delete "' + t.Name + '"?', danger: true, okLabel: 'Delete' });
+          if (!ok) return;
+          try {
+            await Api.call('api_templates_remove', { uuid: t.UUID });
+            UI.toast('Deleted', 'success');
+            Views.Templates._state.selectedUuid = null;
+            Views.Templates._refreshList();
+            document.getElementById('tpl-editor-pane').innerHTML = '<p class="muted">Pick a template on the left, or create a new one.</p>';
+          } catch (e) { UI.toast(e.message, 'danger'); }
+        });
+      }
+
+      if (State.aiEnabled) {
+        const btn = pane.querySelector('#tpl-paraphrase');
+        btn.addEventListener('click', () => Views.Templates._openParaphrase(t, isExisting));
+      }
+    },
+
+    _openParaphrase(t, isExisting) {
+      const currentBody = document.getElementById('tpl-body').value;
+      UI.modal({
+        title: 'Paraphrase template',
+        bodyHtml:
+          '<div class="form-row">' +
+            '<div class="form-field"><label>Tone</label><select id="pp-tone">' +
+              '<option value="friendly">Friendly</option><option value="formal">Formal</option>' +
+              '<option value="concise">Concise</option><option value="encouraging">Encouraging</option>' +
+              '<option value="Nepali">Nepali</option>' +
+            '</select></div>' +
+            '<div class="form-field"><label>Provider</label><select id="pp-provider"></select></div>' +
+          '</div>' +
+          '<div class="form-field"><label>Original</label><textarea id="pp-orig" readonly style="min-height:100px">' + UI.escapeHtml(currentBody) + '</textarea></div>' +
+          '<div class="form-field"><label>Paraphrased</label><textarea id="pp-out" placeholder="Click Generate" style="min-height:120px"></textarea></div>' +
+          '<div id="pp-meta" class="tiny muted"></div>' +
+          '<div id="pp-ph-warn" class="form-error" style="margin-top:6px"></div>',
+        footerHtml:
+          '<button class="btn" data-cancel>Cancel</button>' +
+          '<button class="btn btn-ai" data-gen>✨ Generate</button>' +
+          '<button class="btn" data-saveas disabled>Save as new</button>' +
+          '<button class="btn btn-primary" data-replace disabled>Replace</button>',
+        onMount(el) {
+          const providerSel = el.querySelector('#pp-provider');
+          const providers = ['groq','openai','anthropic','gemini','openrouter'];
+          const defaultProv = State.configs['ai.defaultProvider'] || 'groq';
+          providerSel.innerHTML = providers.map(p =>
+            '<option value="' + p + '"' + (p === defaultProv ? ' selected' : '') + '>' + p + '</option>'
+          ).join('');
+
+          el.querySelector('[data-cancel]').addEventListener('click', UI.closeModal);
+
+          el.querySelector('[data-gen]').addEventListener('click', async (e) => {
+            const btn = e.target;
+            btn.disabled = true;
+            const orig = btn.innerHTML;
+            btn.innerHTML = '<span class="spinner"></span> Generating…';
+            try {
+              const tone = el.querySelector('#pp-tone').value;
+              const provider = providerSel.value;
+              const targetLanguage = tone === 'Nepali' ? 'Nepali' : '';
+              const r = await Api.call('api_ai_paraphrase', {
+                text: currentBody,
+                tone: tone === 'Nepali' ? 'friendly' : tone,
+                targetLanguage,
+                opts: { provider }
+              });
+              el.querySelector('#pp-out').value = r.paraphrased;
+              el.querySelector('#pp-meta').textContent =
+                'Provider: ' + r.provider + ' · model: ' + r.model + ' · ' +
+                UI.formatCost(r.estCost) + ' · ' + r.latencyMs + 'ms · ' +
+                (r.usage.inputTokens + r.usage.outputTokens) + ' tokens';
+              const phWarn = el.querySelector('#pp-ph-warn');
+              if (r.placeholdersChanged) {
+                phWarn.innerHTML = '⚠ Placeholders changed. Original: ' + (r.originalPlaceholders.join(', ') || '(none)') +
+                                   ' → New: ' + (r.newPlaceholders.join(', ') || '(none)');
+              } else { phWarn.textContent = ''; }
+              el.querySelector('[data-saveas]').disabled = false;
+              el.querySelector('[data-replace]').disabled = !isExisting;
+            } catch (err) {
+              UI.toast(err.message, 'danger');
+            } finally {
+              btn.disabled = false;
+              btn.innerHTML = orig;
+            }
+          });
+
+          el.querySelector('[data-saveas]').addEventListener('click', async () => {
+            const newBody = el.querySelector('#pp-out').value;
+            const name = await UI.prompt({ title: 'Save as new template', label: 'Name', value: (t.Name ? t.Name + ' (paraphrase)' : 'New paraphrased template') });
+            if (!name) return;
+            try {
+              await Api.call('api_templates_create', {
+                Name: name, Description: t.Description || '', Body: newBody,
+                SupportedCourses: t.SupportedCourses || '*', Source: 'ai-drafted', Active: true
+              });
+              UI.closeModal();
+              UI.toast('Saved', 'success');
+              Views.Templates._refreshList();
+            } catch (e) { UI.toast(e.message, 'danger'); }
+          });
+
+          el.querySelector('[data-replace]').addEventListener('click', async () => {
+            const newBody = el.querySelector('#pp-out').value;
+            try {
+              await Api.call('api_templates_update', {
+                uuid: t.UUID,
+                patch: { Body: newBody, Source: 'ai-drafted' }
+              });
+              UI.closeModal();
+              UI.toast('Template updated', 'success');
+              Views.Templates._refreshList();
+            } catch (e) { UI.toast(e.message, 'danger'); }
+          });
+        }
+      });
+    }
+  };
+</script>

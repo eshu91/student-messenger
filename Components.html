@@ -1,0 +1,162 @@
+<script>
+  /* =========================================================
+     Components.html — UI primitives shared across all views.
+     ========================================================= */
+  // Views registry — created here so every View_*.html script
+  // can register into it (Components is included before any view).
+   window.Views = window.Views || {};
+   const UI = {};
+
+  // ---------- Escape ----------
+  UI.escapeHtml = function (s) {
+    if (s == null) return '';
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  };
+
+  UI.escapeAttr = UI.escapeHtml;
+
+  // ---------- Toast ----------
+  UI.toast = function (message, variant) {
+    const root = document.getElementById('toast-root');
+    const div = document.createElement('div');
+    div.className = 'toast ' + (variant || '');
+    div.textContent = message;
+    root.appendChild(div);
+    setTimeout(() => {
+      div.style.transition = 'opacity 0.3s';
+      div.style.opacity = '0';
+      setTimeout(() => div.remove(), 300);
+    }, variant === 'danger' ? 6000 : 3500);
+  };
+
+  // ---------- Modal ----------
+  UI.modal = function (opts) {
+    // opts: { title, bodyHtml, footerHtml, onMount, width }
+    const root = document.getElementById('modal-root');
+    root.innerHTML =
+      '<div class="modal-backdrop" data-modal-backdrop>' +
+        '<div class="modal" style="' + (opts.width ? 'max-width:' + opts.width + 'px;' : '') + '">' +
+          '<div class="modal-header">' +
+            '<h2>' + UI.escapeHtml(opts.title || '') + '</h2>' +
+            '<button class="modal-close" data-modal-close>×</button>' +
+          '</div>' +
+          '<div class="modal-body">' + (opts.bodyHtml || '') + '</div>' +
+          (opts.footerHtml ? '<div class="modal-footer">' + opts.footerHtml + '</div>' : '') +
+        '</div>' +
+      '</div>';
+
+    const backdrop = root.querySelector('[data-modal-backdrop]');
+    backdrop.addEventListener('click', (e) => {
+      if (e.target === backdrop) UI.closeModal();
+    });
+    root.querySelector('[data-modal-close]').addEventListener('click', UI.closeModal);
+
+    if (typeof opts.onMount === 'function') {
+      opts.onMount(root.querySelector('.modal'));
+    }
+    return root.querySelector('.modal');
+  };
+
+  UI.closeModal = function () {
+    document.getElementById('modal-root').innerHTML = '';
+  };
+
+  // ---------- Confirm ----------
+  UI.confirm = function (opts) {
+    return new Promise(resolve => {
+      UI.modal({
+        title: opts.title || 'Confirm',
+        bodyHtml: '<p>' + UI.escapeHtml(opts.message || 'Are you sure?') + '</p>',
+        footerHtml:
+          '<button class="btn" data-cancel>Cancel</button>' +
+          '<button class="btn ' + (opts.danger ? 'btn-danger' : 'btn-primary') + '" data-ok>' +
+            UI.escapeHtml(opts.okLabel || 'Confirm') + '</button>',
+        onMount(el) {
+          el.querySelector('[data-cancel]').addEventListener('click', () => { UI.closeModal(); resolve(false); });
+          el.querySelector('[data-ok]').addEventListener('click', () => { UI.closeModal(); resolve(true); });
+        }
+      });
+    });
+  };
+
+  // ---------- Prompt ----------
+  UI.prompt = function (opts) {
+    return new Promise(resolve => {
+      UI.modal({
+        title: opts.title || 'Input',
+        bodyHtml:
+          '<div class="form-field">' +
+            (opts.label ? '<label>' + UI.escapeHtml(opts.label) + '</label>' : '') +
+            (opts.multiline
+              ? '<textarea id="ui-prompt-input">' + UI.escapeHtml(opts.value || '') + '</textarea>'
+              : '<input id="ui-prompt-input" type="text" value="' + UI.escapeAttr(opts.value || '') + '">') +
+          '</div>',
+        footerHtml:
+          '<button class="btn" data-cancel>Cancel</button>' +
+          '<button class="btn btn-primary" data-ok>' + UI.escapeHtml(opts.okLabel || 'OK') + '</button>',
+        onMount(el) {
+          const input = el.querySelector('#ui-prompt-input');
+          setTimeout(() => input.focus(), 50);
+          el.querySelector('[data-cancel]').addEventListener('click', () => { UI.closeModal(); resolve(null); });
+          el.querySelector('[data-ok]').addEventListener('click', () => {
+            const v = input.value;
+            UI.closeModal();
+            resolve(v);
+          });
+        }
+      });
+    });
+  };
+
+  // ---------- Skeletons ----------
+  UI.skeleton = function (lines) {
+    let html = '';
+    for (let i = 0; i < (lines || 3); i++) {
+      html += '<div style="height:14px; background:var(--color-bg-muted); border-radius:4px; margin-bottom:8px; width:' +
+              (60 + Math.random() * 40) + '%"></div>';
+    }
+    return '<div class="card">' + html + '</div>';
+  };
+
+  UI.empty = function (msg, ctaHtml) {
+    return '<div class="empty">' +
+             '<div class="icon">📭</div>' +
+             '<div>' + UI.escapeHtml(msg) + '</div>' +
+             (ctaHtml ? '<div style="margin-top:12px">' + ctaHtml + '</div>' : '') +
+           '</div>';
+  };
+
+  // ---------- AI badge ----------
+  UI.aiBadge = function (label) {
+    return '<span class="badge badge-ai">✨ ' + UI.escapeHtml(label || 'AI') + '</span>';
+  };
+
+  // ---------- Format helpers ----------
+  UI.formatDate = function (iso, tz) {
+    if (!iso) return '';
+    try {
+      const d = new Date(iso);
+      return d.toLocaleString('en-GB', {
+        timeZone: tz || State.user && State.user.timezone || 'Asia/Kathmandu',
+        year: 'numeric', month: 'short', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', hour12: false
+      });
+    } catch (e) { return iso; }
+  };
+
+  UI.formatCost = function (n) {
+    const v = Number(n) || 0;
+    if (v < 0.001) return '$' + v.toFixed(6);
+    if (v < 1)     return '$' + v.toFixed(4);
+    return '$' + v.toFixed(2);
+  };
+
+  UI.formatNum = function (n) {
+    return (Number(n) || 0).toLocaleString();
+  };
+</script>
