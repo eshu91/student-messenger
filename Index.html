@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Everest Student Messenger</title>
+  <?!= include('Styles'); ?>
+</head>
+<body>
+  <div id="app">
+    <header id="topbar">
+      <div class="topbar-left">
+        <span class="logo">📨 Everest Messenger</span>
+      </div>
+      <div class="topbar-right">
+        <span id="topbar-user" class="user-chip"></span>
+      </div>
+    </header>
+
+    <div id="layout">
+      <nav id="sidenav"></nav>
+      <main id="view">
+        <div class="loading-shell">Loading…</div>
+      </main>
+    </div>
+
+    <div id="modal-root"></div>
+    <div id="toast-root"></div>
+  </div>
+
+  <?!= include('Components'); ?>
+  <?!= include('View_Dashboard'); ?>
+  <?!= include('View_Students'); ?>
+  <?!= include('View_Templates'); ?>
+  <?!= include('View_Compose'); ?>
+  <?!= include('View_Queue'); ?>
+  <?!= include('View_History'); ?>
+  <?!= include('View_LlmUsage'); ?>
+  <?!= include('View_Settings'); ?>
+  <?!= include('View_ImportExport'); ?>
+  <?!= include('App'); ?>
+</body>
+</html>

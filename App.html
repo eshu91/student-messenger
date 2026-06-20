@@ -1,0 +1,223 @@
+<script>
+  /* =========================================================
+     App.html — router, State, Api helper, app startup.
+     ========================================================= */
+
+  const Views = window.Views = window.Views || {}; // populated by View_*.html scripts; do NOT reset.
+
+  // ---------- Api wrapper around google.script.run ----------
+
+  class ApiError extends Error {
+    constructor(err) {
+      super((err && err.message) || 'API error');
+      this.code = (err && err.code) || 'INTERNAL';
+      this.details = err && err.details;
+    }
+  }
+
+  const Api = {
+    call(fnName, payload) {
+      return new Promise((resolve, reject) => {
+        const runner = google.script.run
+      .withSuccessHandler(res => {
+          if (res && res.ok) return resolve(res.data);
+          if (res && res.error) return reject(new ApiError(res.error));
+          reject(new ApiError({
+            code: 'NO_RESPONSE',
+            message: fnName + ' returned no envelope. Got: ' + JSON.stringify(res) +
+              '. Most common cause: stale deployment. In Apps Script: Deploy → Manage deployments → ✏️ → Version: New version → Deploy.'
+          }));
+        })
+      .withFailureHandler(err => {
+          reject(new ApiError({
+            code: 'TRANSPORT',
+            message: fnName + ' transport failed: ' + ((err && err.message) || String(err) || '(no message — Apps Script returned without a body)')
+          }));
+        });
+        if (typeof runner[fnName] !== 'function') {
+          reject(new ApiError({ code: 'NO_FUNCTION', message: 'Unknown API: ' + fnName }));
+          return;
+        }
+        runner[fnName](payload);
+      });
+    }
+  };
+
+  // ---------- State ----------
+
+  const State = {
+    user: null,
+    configs: {},     // 'category.key' → coerced value
+    configRows: [],  // raw config rows for Settings view
+    aiEnabled: false,
+    counts: { students: 0, templates: 0, queue: 0 },
+
+    parseConfig(row) {
+      const v = row.Value;
+      if (row.Type === 'number')  return Number(v);
+      if (row.Type === 'boolean') return String(v).toLowerCase() === 'true' || String(v) === '1';
+      if (row.Type === 'json')    { try { return JSON.parse(v); } catch (_) { return null; } }
+      return v;
+    },
+
+    async load() {
+      const [me, cfgs] = await Promise.all([
+        Api.call('api_auth_me'),
+        Api.call('api_configs_list')
+      ]);
+      this.user = me;
+      this.configRows = cfgs;
+      this.configs = {};
+      cfgs.forEach(c => {
+        this.configs[c.Category + '.' + c.Key] = State.parseConfig(c);
+      });
+      this.aiEnabled = !!this.configs['features.ai.enabled'];
+    },
+
+    async refreshCounts() {
+      try {
+        const summary = await Api.call('api_dashboard_summary');
+        this.counts.students = summary.kpis.activeStudents;
+        this.counts.templates = summary.kpis.activeTemplates;
+        this.counts.queue = summary.kpis.pendingQueue;
+      } catch (e) { /* ignore */ }
+    }
+  };
+  window.State = State;
+  window.Api = Api;
+
+  // ---------- Sidenav ----------
+
+  const Nav = {
+    items: [
+      { group: 'Workspace', label: 'Dashboard',      path: '/dashboard'      },
+      { group: 'Workspace', label: 'Students',       path: '/students',  countKey: 'students' },
+      { group: 'Workspace', label: 'Templates',      path: '/templates', countKey: 'templates' },
+      { group: 'Workspace', label: 'Compose',        path: '/compose'        },
+      { group: 'Workspace', label: 'Queue',          path: '/queue',     countKey: 'queue', warnIfPending: true },
+      { group: 'Workspace', label: 'History',        path: '/history'        },
+      { group: 'AI',        label: 'LLM usage',      path: '/llm-usage'      },
+      { group: 'System',    label: 'Settings',       path: '/settings'       },
+      { group: 'System',    label: 'Import / Export',path: '/import-export'  }
+    ],
+
+    render() {
+      const current = location.hash.replace(/^#/, '') || '/dashboard';
+      const groups = {};
+      this.items.forEach(i => { (groups[i.group] = groups[i.group] || []).push(i); });
+
+      let html = '';
+      Object.keys(groups).forEach(g => {
+        html += '<div class="nav-section">';
+        html += '<div class="nav-section-title">' + UI.escapeHtml(g) + '</div>';
+        groups[g].forEach(i => {
+          const active = current === i.path ? ' active' : '';
+          const aiCls = i.group === 'AI' ? ' ai' : '';
+          let badge = '';
+          if (i.countKey) {
+            const n = State.counts[i.countKey];
+            if (n !== undefined && n !== null) {
+              const warn = i.warnIfPending && n > 0;
+              badge = '<span class="nav-badge' + (warn ? ' warning' : '') + '">' + n + '</span>';
+            }
+          }
+          html += '<a class="nav-item' + active + aiCls + '" href="#' + i.path + '">' +
+                    '<span>' + UI.escapeHtml(i.label) + '</span>' + badge +
+                  '</a>';
+        });
+        html += '</div>';
+      });
+      document.getElementById('sidenav').innerHTML = html;
+    }
+  };
+  window.Nav = Nav;
+
+  // ---------- Router ----------
+
+  const Router = {
+    routes: {
+      '/dashboard':     () => Views.Dashboard.render(),
+      '/students':      (q) => Views.Students.render(q),
+      '/templates':     () => Views.Templates.render(),
+      '/compose':       () => Views.Compose.render(),
+      '/queue':         () => Views.Queue.render(),
+      '/history':       (q) => Views.History.render(q),
+      '/llm-usage':     () => Views.LlmUsage.render(),
+      '/settings':      () => Views.Settings.render(),
+      '/import-export': () => Views.ImportExport.render()
+    },
+
+    navigate(path) { location.hash = '#' + path; },
+
+    // Generation counter — bumped on every handle() invocation.
+    // Async helpers that run after an await can snapshot viewGen() and
+    // bail out via viewStale(gen) before touching DOM.
+    _gen: 0,
+
+    _parseHash() {
+      const raw = location.hash.replace(/^#/, '') || '/dashboard';
+      const [path, qs] = raw.split('?');
+      const params = {};
+      if (qs) qs.split('&').forEach(p => {
+        const [k, v] = p.split('=');
+        if (k) params[decodeURIComponent(k)] = decodeURIComponent(v || '');
+      });
+      return { path, params };
+    },
+
+    async handle() {
+      const myGen = ++this._gen;
+      const { path, params } = this._parseHash();
+      const fn = this.routes[path] || this.routes['/dashboard'];
+      try {
+        document.getElementById('view').innerHTML = '<div class="loading-shell">Loading…</div>';
+        await State.refreshCounts();
+        if (this._gen !== myGen) return;   // user navigated again — abort
+        Nav.render();
+        await fn(params);
+      } catch (e) {
+        console.error(e);
+        if (this._gen !== myGen) return;   // don't overwrite a newer view with stale error
+        document.getElementById('view').innerHTML =
+          '<div class="card"><h2>Error loading view</h2><pre>' +
+          UI.escapeHtml(e.message || String(e)) + '</pre></div>';
+      }
+    },
+
+    start() {
+      addEventListener('hashchange', () => this.handle());
+      this.handle();
+    }
+  };
+  window.Router = Router;
+
+  // Public helpers any view's async helper can use to detect that the
+  // user has navigated away mid-flight. Snapshot at the start, bail later:
+  //   const myGen = viewGen();
+  //   const data = await Api.call(...);
+  //   if (viewStale(myGen)) return;
+  window.viewGen   = function ()  { return Router._gen; };
+  window.viewStale = function (g) { return Router._gen !== g; };
+
+  // ---------- Init ----------
+
+  async function _init() {
+    try {
+      await State.load();
+      const u = document.getElementById('topbar-user');
+      u.textContent = State.user.email || '(unknown)';
+      Nav.render();
+      Router.start();
+    } catch (e) {
+      document.getElementById('view').innerHTML =
+        '<div class="card"><h2>Could not start</h2><p>' + UI.escapeHtml(e.message || String(e)) + '</p>' +
+        '<p class="muted">If this is a fresh install, open the Apps Script editor and run <code>Bootstrap.run()</code>.</p></div>';
+    }
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', _init);
+  } else {
+    _init();
+  }
+</script>

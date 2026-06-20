@@ -1,0 +1,62 @@
+<script>
+  Views.ImportExport = {
+    async render() {
+      const view = document.getElementById('view');
+      view.innerHTML =
+        '<div class="view-header"><h1>Import / Export</h1></div>' +
+
+        '<div class="card">' +
+          '<h2>Full workspace backup (JSON)</h2>' +
+          '<p class="muted">Downloads everything in this workspace — students, templates, configs, queue, and history — as a single JSON file.</p>' +
+          '<p class="tiny muted">⚠ API keys and full LLM prompts/responses are NOT included for security. ' +
+            'LLM call summaries (token counts, costs, timestamps) are also excluded from this backup.</p>' +
+          '<button class="btn btn-primary" id="ie-backup">Download backup JSON</button>' +
+        '</div>' +
+
+        '<div class="card">' +
+          '<h2>Students CSV</h2>' +
+          '<p class="muted">Manage your student list via CSV — useful for bulk imports from a class roster spreadsheet.</p>' +
+          '<div class="row">' +
+            '<a class="btn" href="#/students">Go to Students</a>' +
+            '<span class="tiny muted" style="margin-left:8px">Use the Import CSV and Export CSV buttons on the Students page.</span>' +
+          '</div>' +
+        '</div>' +
+
+        '<div class="card">' +
+          '<h2>History CSV</h2>' +
+          '<p class="muted">Export your sent/skipped message history with filters applied.</p>' +
+          '<div class="row">' +
+            '<a class="btn" href="#/history">Go to History</a>' +
+          '</div>' +
+        '</div>' +
+
+        '<div class="card">' +
+          '<h2>Restore from backup</h2>' +
+          '<p class="muted tiny">Restore from a backup JSON is a planned feature (Phase 2). ' +
+            'For now, restoring means opening the workbook directly in Google Sheets and editing rows there. ' +
+            'The workbook is named "Everest Student Messenger DB" in your Google Drive.</p>' +
+        '</div>';
+
+      document.getElementById('ie-backup').addEventListener('click', async () => {
+        const btn = document.getElementById('ie-backup');
+        btn.disabled = true; btn.textContent = 'Building backup…';
+        try {
+          const data = await Api.call('api_workspace_backup');
+          const json = JSON.stringify(data, null, 2);
+          const blob = new Blob([json], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = 'everest-messenger-backup-' + new Date().toISOString().slice(0,10) + '.json';
+          document.body.appendChild(a); a.click(); a.remove();
+          setTimeout(() => URL.revokeObjectURL(url), 1000);
+          UI.toast('Backup downloaded');
+        } catch (e) {
+          UI.toast(e.message, 'danger');
+        } finally {
+          btn.disabled = false; btn.textContent = 'Download backup JSON';
+        }
+      });
+    }
+  };
+</script>

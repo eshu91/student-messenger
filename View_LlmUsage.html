@@ -1,0 +1,169 @@
+<script>
+  Views.LlmUsage = {
+    async render() {
+      const view = document.getElementById('view');
+      view.innerHTML =
+        '<div class="view-header">' +
+          '<h1>LLM usage</h1>' +
+          '<div class="row">' +
+            '<select id="llm-days">' +
+              '<option value="7">Last 7 days</option>' +
+              '<option value="30" selected>Last 30 days</option>' +
+              '<option value="90">Last 90 days</option>' +
+            '</select>' +
+            '<button class="btn" id="llm-refresh">Refresh</button>' +
+          '</div>' +
+        '</div>' +
+        '<div id="llm-body"><div class="loading-shell">Loading…</div></div>';
+
+      document.getElementById('llm-refresh').addEventListener('click', () => Views.LlmUsage._refresh());
+      document.getElementById('llm-days').addEventListener('change', () => Views.LlmUsage._refresh());
+
+      await Views.LlmUsage._refresh();
+    },
+
+    async _refresh() {
+      const body = document.getElementById('llm-body');
+      body.innerHTML = '<div class="loading-shell">Loading…</div>';
+      try {
+        const days = Number(document.getElementById('llm-days').value || 30);
+        const data = await Api.call('api_llmusage_summary', { days });
+
+        const pct = data.monthlyHardCapUSD > 0
+          ? Math.min(100, Math.round((data.monthlySpend / data.monthlyHardCapUSD) * 100))
+          : 0;
+        const warnPct = data.monthlyHardCapUSD > 0
+          ? Math.min(100, Math.round((data.monthlyWarningUSD / data.monthlyHardCapUSD) * 100))
+          : 0;
+        const overWarn = data.monthlySpend > data.monthlyWarningUSD;
+
+        body.innerHTML =
+          // Monthly spend card
+          '<div class="card">' +
+            '<h2>This month\'s AI spend</h2>' +
+            '<div class="spend-row">' +
+              '<div class="spend-amounts">' +
+                '<div class="spend-big">' + UI.formatCost(data.monthlySpend) + '</div>' +
+                '<div class="tiny muted">of ' + UI.formatCost(data.monthlyHardCapUSD) + ' hard cap · ' +
+                  'warning at ' + UI.formatCost(data.monthlyWarningUSD) + '</div>' +
+              '</div>' +
+            '</div>' +
+            '<div class="progress-bar">' +
+              '<div class="progress-fill ' + (overWarn ? 'warn' : 'ok') + '" style="width:' + pct + '%"></div>' +
+              '<div class="progress-marker" style="left:' + warnPct + '%" title="Warning threshold"></div>' +
+            '</div>' +
+            (data.monthlySpend >= data.monthlyHardCapUSD
+              ? '<p class="danger">⚠ Hard cap reached. AI calls are blocked until next month or until you raise the cap in Settings.</p>'
+              : overWarn
+                ? '<p class="warning">⚠ Past the warning threshold. Consider raising or lowering the cap in Settings.</p>'
+                : '') +
+          '</div>' +
+
+          // KPI grid
+          '<div class="kpi-grid">' +
+            Views.LlmUsage._kpi('Calls (' + days + 'd)', UI.formatNum(data.totals.calls)) +
+            Views.LlmUsage._kpi('Cost (' + days + 'd)', UI.formatCost(data.totals.cost)) +
+            Views.LlmUsage._kpi('Input tokens', UI.formatNum(data.totals.inputTokens)) +
+            Views.LlmUsage._kpi('Output tokens', UI.formatNum(data.totals.outputTokens)) +
+            Views.LlmUsage._kpi('Errors', UI.formatNum(data.totals.errors), data.totals.errors > 0 ? 'warn' : '') +
+          '</div>' +
+
+          // Breakdowns
+          '<div class="split-pane">' +
+            Views.LlmUsage._breakdownCard('By provider', data.byProvider) +
+            Views.LlmUsage._breakdownCard('By feature', data.byFeature) +
+          '</div>' +
+
+          // Recent
+          '<div class="card" style="padding:0">' +
+            '<div style="padding:14px 16px 0"><h2 style="margin:0">Recent calls</h2></div>' +
+            (data.recent.length
+              ? '<table class="data">' +
+                  '<thead><tr>' +
+                    '<th>When</th><th>Feature</th><th>Provider</th><th>Model</th>' +
+                    '<th>In</th><th>Out</th><th>Cost</th><th>Status</th><th>Latency</th>' +
+                  '</tr></thead><tbody>' +
+                  data.recent.map(c => Views.LlmUsage._recentRow(c)).join('') +
+                '</tbody></table>'
+              : '<div style="padding:16px">' + UI.empty('No AI calls in the window.') + '</div>') +
+          '</div>';
+
+        document.querySelectorAll('[data-llm-detail]').forEach(el => {
+          el.addEventListener('click', () => Views.LlmUsage._showDetail(el.getAttribute('data-llm-detail')));
+        });
+      } catch (e) {
+        body.innerHTML = '<div class="card danger">' + UI.escapeHtml(e.message) + '</div>';
+      }
+    },
+
+    _kpi(label, value, cls) {
+      return '<div class="kpi ' + (cls || '') + '">' +
+        '<div class="kpi-label">' + UI.escapeHtml(label) + '</div>' +
+        '<div class="kpi-value">' + UI.escapeHtml(String(value)) + '</div>' +
+      '</div>';
+    },
+
+    _breakdownCard(title, obj) {
+      const keys = Object.keys(obj || {}).sort((a, b) => (obj[b].cost || 0) - (obj[a].cost || 0));
+      if (!keys.length) return '<div class="card"><h2>' + UI.escapeHtml(title) + '</h2>' + UI.empty('No data.') + '</div>';
+      const maxCost = Math.max.apply(null, keys.map(k => obj[k].cost)) || 1;
+      return '<div class="card"><h2>' + UI.escapeHtml(title) + '</h2>' +
+        '<div class="breakdown">' +
+          keys.map(k => {
+            const pct = Math.round((obj[k].cost / maxCost) * 100);
+            return '<div class="breakdown-row">' +
+              '<div class="breakdown-label">' + UI.escapeHtml(k) +
+                '<span class="tiny muted"> · ' + obj[k].calls + ' calls</span></div>' +
+              '<div class="breakdown-bar"><div class="breakdown-fill" style="width:' + pct + '%"></div></div>' +
+              '<div class="breakdown-val">' + UI.formatCost(obj[k].cost) + '</div>' +
+            '</div>';
+          }).join('') +
+        '</div></div>';
+    },
+
+    _recentRow(c) {
+      const statusBadge =
+        c.status === 'success' ? '<span class="badge badge-success">ok</span>' :
+        c.status === 'blocked-by-cap' ? '<span class="badge badge-danger">blocked</span>' :
+        '<span class="badge badge-warning">' + UI.escapeHtml(c.status) + '</span>';
+      return '<tr style="cursor:pointer" data-llm-detail="' + UI.escapeAttr(c.UUID) + '">' +
+        '<td class="tiny">' + UI.escapeHtml(UI.formatDate(c.when)) + '</td>' +
+        '<td>' + UI.escapeHtml(c.feature || '') + '</td>' +
+        '<td>' + UI.escapeHtml(c.provider || '') + '</td>' +
+        '<td class="tiny">' + UI.escapeHtml(c.model || '') + '</td>' +
+        '<td>' + UI.formatNum(c.inputTokens) + '</td>' +
+        '<td>' + UI.formatNum(c.outputTokens) + '</td>' +
+        '<td>' + UI.formatCost(c.cost) + '</td>' +
+        '<td>' + statusBadge + '</td>' +
+        '<td class="tiny">' + UI.escapeHtml(String(c.latencyMs || 0)) + 'ms</td>' +
+      '</tr>';
+    },
+
+    async _showDetail(uuid) {
+      try {
+        const c = await Api.call('api_llmusage_detail', { uuid });
+        UI.modal({
+          title: 'LLM call detail',
+          width: 720,
+          bodyHtml:
+            '<div class="tiny muted">' +
+              UI.escapeHtml(c.Feature) + ' · ' + UI.escapeHtml(c.Provider) + ' · ' +
+              UI.escapeHtml(c.Model) + ' · ' + UI.formatDate(c.CreatedAt) +
+            '</div>' +
+            '<h3 style="margin-top:12px">Prompt</h3>' +
+            '<pre class="preview-body">' + UI.escapeHtml(c.Prompt || '') + '</pre>' +
+            '<h3>Response</h3>' +
+            '<pre class="preview-body">' + UI.escapeHtml(c.Response || '') + '</pre>' +
+            (c.ErrorMessage ? '<p class="danger"><strong>Error:</strong> ' + UI.escapeHtml(c.ErrorMessage) + '</p>' : '') +
+            '<div class="tiny muted" style="margin-top:8px">' +
+              'Cost ' + UI.formatCost(c.EstCostUSD) + ' · ' +
+              'In ' + UI.formatNum(c.InputTokens) + ' / Out ' + UI.formatNum(c.OutputTokens) + ' tokens · ' +
+              'Latency ' + UI.escapeHtml(String(c.LatencyMs || 0)) + 'ms' +
+            '</div>',
+          footerHtml: '<button class="btn" data-cancel>Close</button>',
+          onMount(el) { el.querySelector('[data-cancel]').addEventListener('click', UI.closeModal); }
+        });
+      } catch (e) { UI.toast(e.message, 'danger'); }
+    }
+  };
+</script>

@@ -1,0 +1,80 @@
+<script>
+  Views.Dashboard = {
+    async render() {
+      const view = document.getElementById('view');
+      view.innerHTML =
+        '<div class="view-header"><h1>Dashboard</h1></div>' +
+        UI.skeleton(2);
+
+      try {
+        const s = await Api.call('api_dashboard_summary');
+        view.innerHTML = Views.Dashboard._html(s);
+        Views.Dashboard._bind();
+
+        // Warn if monthly AI spend over warning threshold
+        if (s.aiEnabled) {
+          try {
+            const llm = await Api.call('api_llmusage_summary', { days: 30 });
+            if (llm.monthlyWarningUSD > 0 && llm.monthlySpend >= llm.monthlyWarningUSD) {
+              UI.toast('AI monthly spend $' + llm.monthlySpend.toFixed(2) +
+                       ' is above warning threshold $' + llm.monthlyWarningUSD.toFixed(2), 'warning');
+            }
+          } catch (_) {}
+        }
+      } catch (e) {
+        view.innerHTML = '<div class="card"><h2>Couldn\'t load dashboard</h2><p>' +
+                          UI.escapeHtml(e.message) + '</p></div>';
+      }
+    },
+
+    _html(s) {
+      const k = s.kpis;
+      const aiKpi = s.aiEnabled
+        ? '<div class="kpi ai">' +
+            '<div class="kpi-label">AI today</div>' +
+            '<div class="kpi-value">' + k.aiTodayCalls + '</div>' +
+            '<div class="tiny">' + UI.formatCost(k.aiTodayCost) + ' est.</div>' +
+          '</div>'
+        : '';
+
+      const recentRows = (s.recent || []).length
+        ? '<table class="data">' +
+            '<thead><tr><th>When</th><th>Student</th><th>Template</th><th>Status</th></tr></thead>' +
+            '<tbody>' +
+            s.recent.map(r =>
+              '<tr>' +
+                '<td>' + UI.formatDate(r.when) + '</td>' +
+                '<td>' + UI.escapeHtml(r.student || '') + '</td>' +
+                '<td>' + UI.escapeHtml(r.template || '') + '</td>' +
+                '<td><span class="badge ' + (r.status === 'Sent' ? 'badge-success' : 'badge-warning') + '">' +
+                  UI.escapeHtml(r.status) +
+                '</span></td>' +
+              '</tr>'
+            ).join('') +
+            '</tbody></table>'
+        : UI.empty('No messages sent yet today.');
+
+      return (
+        '<div class="view-header">' +
+          '<h1>Dashboard</h1>' +
+          '<div class="row">' +
+            '<a class="btn btn-primary" href="#/compose">Compose new</a>' +
+          '</div>' +
+        '</div>' +
+
+        '<div class="kpi-grid">' +
+          '<div class="kpi"><div class="kpi-label">Active students</div><div class="kpi-value">' + k.activeStudents + '</div></div>' +
+          '<div class="kpi' + (k.pendingQueue > 0 ? ' warning' : '') + '"><div class="kpi-label">Pending in queue</div><div class="kpi-value">' + k.pendingQueue + '</div></div>' +
+          '<div class="kpi success"><div class="kpi-label">Sent today</div><div class="kpi-value">' + k.sentToday + '</div></div>' +
+          '<div class="kpi"><div class="kpi-label">Templates</div><div class="kpi-value">' + k.activeTemplates + '</div></div>' +
+          aiKpi +
+        '</div>' +
+
+        '<h2>Recent activity</h2>' +
+        '<div class="card" style="padding:0">' + recentRows + '</div>'
+      );
+    },
+
+    _bind() { /* nothing interactive yet beyond links */ }
+  };
+</script>

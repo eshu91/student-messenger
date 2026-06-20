@@ -1,0 +1,140 @@
+<script>
+  Views.Queue = {
+    _state: { rows: [] },
+
+    async render() {
+      const view = document.getElementById('view');
+      view.innerHTML =
+        '<div class="view-header">' +
+          '<h1>Queue</h1>' +
+          '<div class="row">' +
+            '<button class="btn" id="q-refresh">Refresh</button>' +
+            '<button class="btn btn-danger" id="q-clear">Clear all</button>' +
+          '</div>' +
+        '</div>' +
+        '<div id="q-list"><div class="loading-shell">Loading queue…</div></div>';
+
+      document.getElementById('q-refresh').addEventListener('click', () => Views.Queue._refresh());
+      document.getElementById('q-clear').addEventListener('click', async () => {
+        const ok = await UI.confirm({
+          title: 'Clear queue',
+          message: 'Remove all pending messages? They will NOT be moved to History.',
+          danger: true,
+          okLabel: 'Clear all'
+        });
+        if (!ok) return;
+        try {
+          const removed = await Api.call('api_queue_clear');
+          UI.toast('Cleared ' + removed + ' messages');
+          Views.Queue._refresh();
+        } catch (e) { UI.toast(e.message, 'danger'); }
+      });
+
+      await Views.Queue._refresh();
+    },
+
+    async _refresh() {
+      const root = document.getElementById('q-list');
+      root.innerHTML = '<div class="loading-shell">Loading queue…</div>';
+      try {
+        const rows = await Api.call('api_queue_list');
+        Views.Queue._state.rows = rows;
+        if (!rows.length) {
+          root.innerHTML = UI.empty(
+            'Queue is empty.',
+            '<a class="btn btn-primary" href="#/compose">Compose messages</a>'
+          );
+          return;
+        }
+        root.innerHTML =
+          '<div class="row" style="margin-bottom:12px">' +
+            '<span class="badge badge-warning">' + rows.length + ' pending</span>' +
+            '<span class="tiny muted" style="margin-left:8px">' +
+              'Click "Open in Teams" to start the chat. After sending in Teams, return and click "Mark sent".' +
+            '</span>' +
+          '</div>' +
+          rows.map(r => Views.Queue._cardHtml(r)).join('');
+        Views.Queue._wireCards();
+      } catch (e) {
+        root.innerHTML = '<div class="card danger">' + UI.escapeHtml(e.message) + '</div>';
+      }
+    },
+
+    _cardHtml(r) {
+      const s = r._student;
+      const name = s ? s.Name : '(student missing)';
+      const email = s ? s.TeamsEmail : '';
+      const meta = s ? (UI.escapeHtml(s.Course || '') + ' / ' + UI.escapeHtml(s.Batch || '')) : '';
+      const ai = String(r.WasAiAssisted) === 'true' || r.WasAiAssisted === true ? ' ' + UI.aiBadge('AI') : '';
+      const tag = r.CampaignTag ? '<span class="badge" style="margin-left:6px">' + UI.escapeHtml(r.CampaignTag) + '</span>' : '';
+
+      return '<div class="queue-card" data-uuid="' + UI.escapeAttr(r.UUID) + '">' +
+        '<div class="queue-card-head">' +
+          '<div>' +
+            '<strong>' + UI.escapeHtml(name) + '</strong>' + ai + tag +
+            '<div class="tiny muted">' + UI.escapeHtml(email) + ' · ' + meta + '</div>' +
+          '</div>' +
+          '<div class="row" style="gap:6px">' +
+            (email
+              ? '<a class="btn btn-primary" href="' + UI.escapeAttr(r.TeamsLink) + '" target="_blank" rel="noopener">Open in Teams</a>'
+              : '<button class="btn" disabled>No email</button>') +
+            '<button class="btn" data-act="edit">Edit</button>' +
+            '<button class="btn btn-success" data-act="sent">Mark sent</button>' +
+            '<button class="btn btn-warning" data-act="skip">Skip</button>' +
+          '</div>' +
+        '</div>' +
+        '<pre class="queue-body">' + UI.escapeHtml(r.RenderedMessage) + '</pre>' +
+      '</div>';
+    },
+
+    _wireCards() {
+      document.querySelectorAll('.queue-card').forEach(card => {
+        const uuid = card.getAttribute('data-uuid');
+        card.querySelector('[data-act="sent"]').addEventListener('click', async () => {
+          try {
+            await Api.call('api_queue_markSent', { uuid });
+            UI.toast('Marked as sent');
+            Views.Queue._refresh();
+          } catch (e) { UI.toast(e.message, 'danger'); }
+        });
+        card.querySelector('[data-act="skip"]').addEventListener('click', async () => {
+          const reason = await UI.prompt({ title: 'Skip message', label: 'Reason (optional)', value: '' });
+          if (reason === null) return;
+          try {
+            await Api.call('api_queue_skip', { uuid, reason });
+            UI.toast('Skipped');
+            Views.Queue._refresh();
+          } catch (e) { UI.toast(e.message, 'danger'); }
+        });
+        card.querySelector('[data-act="edit"]').addEventListener('click', () => {
+          const row = Views.Queue._state.rows.find(r => r.UUID === uuid);
+          if (!row) return;
+          UI.modal({
+            title: 'Edit message',
+            width: 600,
+            bodyHtml:
+              '<p class="tiny muted">Editing will regenerate the Teams link.</p>' +
+              '<div class="form-field"><label>Message body</label>' +
+                '<textarea id="q-edit-body" rows="10">' + UI.escapeHtml(row.RenderedMessage) + '</textarea>' +
+              '</div>',
+            footerHtml:
+              '<button class="btn" data-cancel>Cancel</button>' +
+              '<button class="btn btn-primary" id="q-edit-save">Save</button>',
+            onMount(el) {
+              el.querySelector('[data-cancel]').addEventListener('click', UI.closeModal);
+              el.querySelector('#q-edit-save').addEventListener('click', async () => {
+                const body = el.querySelector('#q-edit-body').value;
+                try {
+                  await Api.call('api_queue_edit', { uuid, body });
+                  UI.toast('Saved');
+                  UI.closeModal();
+                  Views.Queue._refresh();
+                } catch (e) { UI.toast(e.message, 'danger'); }
+              });
+            }
+          });
+        });
+      });
+    }
+  };
+</script>
