@@ -11,12 +11,21 @@ const ComposeService = {
    * Generate previews from a template + filter.
    * @returns array of { student, template, rendered, teamsLink, wasAiAssisted }
    */
-  generatePreview(input) {
-    const { templateUuid, filter, params } = input || {};
+generatePreview(input) {
+    const { templateUuid, filter, assignmentUuid, params } = input || {};
+
     let template = null;
     if (templateUuid) {
       template = TemplateService.get(templateUuid);
       if (!template) throw new NotFoundError('Template not found');
+    }
+
+    let assignment = null;
+    let assignVars = {};
+    if (assignmentUuid) {
+      assignment = AssignmentService.get(assignmentUuid);
+      if (!assignment) throw new NotFoundError('Assignment not found');
+      assignVars = AssignmentService.resolvedVariables(assignment);
     }
 
     const students = StudentService.list({
@@ -24,12 +33,14 @@ const ComposeService = {
       course: (filter && filter.course) || null,
       batch:  (filter && filter.batch)  || null
     });
-
     if (!students.length) return [];
 
+    // Merge: assignment vars provide the base, ad-hoc params override.
+    const mergedParams = Object.assign({}, assignVars, params || {});
+
     return students.map(student => {
-      const body = template ? template.Body : (params && params.adhocBody) || '';
-      const rendered = TemplateService.render(body, student, params || {});
+      const body = template ? template.Body : (mergedParams.adhocBody || '');
+      const rendered = TemplateService.render(body, student, mergedParams);
       TemplateService.validateLength(rendered);
       return {
         student: {
@@ -40,7 +51,8 @@ const ComposeService = {
           Course: student.Course,
           Batch: student.Batch
         },
-        template: template ? { UUID: template.UUID, Name: template.Name } : null,
+        template:   template   ? { UUID: template.UUID,   Name: template.Name   } : null,
+        assignment: assignment ? { UUID: assignment.UUID, Name: assignment.Name } : null,
         rendered,
         teamsLink: buildTeamsLink(student.TeamsEmail, rendered),
         wasAiAssisted: false,
@@ -68,52 +80,57 @@ const ComposeService = {
    * Commit previews to the Queue. Each becomes a Pending row.
    * Dedup check: same (StudentUUID, TemplateUUID, today) warns but does not block.
    */
+
   commitToQueue(input) {
-    const { previews, templateUuid, campaignTag } = input || {};
-    if (!previews || !previews.length) throw new ValidationError('Nothing to queue');
+    const { previews, templateUuid, assignmentUuid, campaignTag } = input || {};
+    if (!previews || !previews.length) throw new ValidationError('No previews to commit');
 
-    const maxQueue = Number(ConfigService.get('limits.maxQueueSize', 200));
+    const maxQ = Number(ConfigService.get('limits.maxQueueSize', 200));
     const currentPending = QueueRepo.list(r => String(r.Status) === 'Pending').length;
-    if (currentPending + previews.length > maxQueue) {
-      throw new ValidationError('Queue capacity exceeded (max ' + maxQueue + ')');
+    if (currentPending + previews.length > maxQ) {
+      throw new ValidationError('Queue capacity exceeded (max ' + maxQ + ')');
     }
 
-    const todayKey = todayIsoDate(ConfigService.get('system.timezone'));
-    const existingToday = QueueRepo.list(r => {
-      if (!r.CreatedAt) return false;
-      return String(r.CreatedAt).slice(0, 10) === todayKey;
-    });
-    const dupSet = {};
-    existingToday.forEach(r => {
-      dupSet[r.StudentUUID + '|' + (r.TemplateUUID || '')] = true;
-    });
-
-    const out = [];
     const warnings = [];
+    const today = new Date().toISOString().slice(0, 10);
+    const existingToday = QueueRepo.list(r =>
+      String(r.CreatedAt).slice(0, 10) === today && String(r.Status) === 'Pending');
+
+    let created = 0;
     previews.forEach(p => {
-      const k = p.student.UUID + '|' + (templateUuid || '');
-      if (dupSet[k]) warnings.push('Possible duplicate for ' + p.student.Name);
-      const row = QueueRepo.insert({
-        StudentUUID: p.student.UUID,
-        TemplateUUID: templateUuid || '',
-        CampaignTag: campaignTag || '',
+      const dup = existingToday.find(r =>
+        r.StudentUUID === p.student.UUID && r.TemplateUUID === (templateUuid || ''));
+      if (dup) {
+        warnings.push('Skipped duplicate for ' + p.student.Name);
+        return;
+      }
+      QueueRepo.insert({
+        StudentUUID:     p.student.UUID,
+        TemplateUUID:    templateUuid || '',
+        CampaignTag:     campaignTag || '',
         RenderedMessage: p.rendered,
-        WasAiAssisted: !!p.wasAiAssisted,
-        AiCallUUIDs: (p.aiCallUuids || []).join(','),
-        TeamsLink: p.teamsLink,
-        Status: 'Pending',
-        SentAt: '',
-        SkipReason: ''
+        WasAiAssisted:   !!p.wasAiAssisted,
+        AiCallUUIDs:     (p.aiCallUuids || []).join(','),
+        TeamsLink:       p.teamsLink,
+        Status:          'Pending',
+        SentAt:          '',
+        SkipReason:      ''
       });
-      out.push(row);
+      created++;
     });
 
-    if (templateUuid) {
-      try { TemplateService.incrementUsage(templateUuid); } catch (_) {}
+    // Remember last-used assignment per (course, batch) for next time.
+    if (assignmentUuid && previews.length && previews[0].student) {
+      _rememberLastAssignment(
+        previews[0].student.Course || '',
+        previews[0].student.Batch || '',
+        assignmentUuid
+      );
     }
 
-    return { created: out.length, warnings };
-  }
+    return { created, warnings };
+  },
+
 };
 
 // =====================================================================
@@ -345,3 +362,18 @@ const DashboardService = {
     return c;
   }
 };
+
+
+// ---------- Last-used Assignment memory (per course+batch) ----------
+
+function _lastAssignmentKey(course, batch) {
+  return 'LAST_ASN__' + (course || '') + '__' + (batch || '');
+}
+
+function _rememberLastAssignment(course, batch, uuid) {
+  PropertiesService.getScriptProperties().setProperty(_lastAssignmentKey(course, batch), uuid || '');
+}
+
+function _getLastAssignment(course, batch) {
+  return PropertiesService.getScriptProperties().getProperty(_lastAssignmentKey(course, batch)) || '';
+}

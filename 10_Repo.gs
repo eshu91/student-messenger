@@ -163,6 +163,13 @@ const QueueRepo    = new BaseRepo('system.sheetName.queue',     TYPE_PREFIX.Queu
 const HistoryRepo  = new BaseRepo('system.sheetName.history',   TYPE_PREFIX.History,   COL.History,   SHEET_HEADERS.History);
 const LlmCallRepo  = new BaseRepo('system.sheetName.llmCalls',  TYPE_PREFIX.LlmCalls,  COL.LlmCalls,  SHEET_HEADERS.LlmCalls);
 
+const AssignmentRepo = new BaseRepo(
+  'system.sheetName.assignments',
+  TYPE_PREFIX.Assignments,
+  COL.Assignments,
+  SHEET_HEADERS.Assignments
+);
+
 // Convenience: find a config row by (Category, Key)
 ConfigRepo.findByCategoryKey = function (category, key) {
   const all = this.list();
