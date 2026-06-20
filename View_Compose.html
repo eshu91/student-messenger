@@ -7,6 +7,8 @@
       adhocAiCallUuids: [],
       wasAiAssisted: false,
       filter: { course: '', batch: '' },
+      assignmentUuid: '',           // NEW
+      params: {}, 
       previews: [],
       campaignTag: ''
     },
@@ -22,7 +24,7 @@
       await Views.Compose._renderStep();
     },
 
-    _drawShell() {
+_drawShell() {
       const view = document.getElementById('view');
       view.innerHTML =
         '<div class="view-header"><h1>Compose</h1></div>' +
@@ -30,8 +32,9 @@
           '<div class="step-pills">' +
             '<span class="step-pill" data-step="1">1. Source</span>' +
             '<span class="step-pill" data-step="2">2. Filter</span>' +
-            '<span class="step-pill" data-step="3">3. Preview</span>' +
-            '<span class="step-pill" data-step="4">4. Commit</span>' +
+            '<span class="step-pill" data-step="3">3. Parameters</span>' +
+            '<span class="step-pill" data-step="4">4. Preview</span>' +
+            '<span class="step-pill" data-step="5">5. Commit</span>' +
           '</div>' +
         '</div>' +
         '<div id="compose-body"></div>';
@@ -45,13 +48,14 @@
       });
     },
 
-    async _renderStep() {
+async _renderStep() {
       Views.Compose._setActiveStep();
       const s = Views.Compose._state.step;
       if (s === 1) return Views.Compose._step1();
       if (s === 2) return Views.Compose._step2();
-      if (s === 3) return Views.Compose._step3();
-      if (s === 4) return Views.Compose._step4();
+      if (s === 3) return Views.Compose._step3Params();
+      if (s === 4) return Views.Compose._step4Preview();
+      if (s === 5) return Views.Compose._step5Commit();
     },
 
     // ---------- Step 1: pick template or draft with AI ----------
@@ -234,8 +238,183 @@
     },
 
     // ---------- Step 3: preview ----------
+async _step3Params() {
+      const body = document.getElementById('compose-body');
+      const s = Views.Compose._state;
+      body.innerHTML = '<div class="loading-shell">Loading parameters…</div>';
 
-    async _step3() {
+      // Detect placeholders in the body so we can show what's filled.
+      let templateBody = s.adhocBody || '';
+      if (s.templateUuid) {
+        try {
+          const t = await Api.call('api_templates_get', { uuid: s.templateUuid });
+          templateBody = t.Body || '';
+        } catch (_) {}
+      }
+      const placeholders = Views.Compose._extractPlaceholders(templateBody);
+
+      let ctx;
+      try {
+        ctx = await Api.call('api_compose_paramContext', s.filter);
+      } catch (e) {
+        body.innerHTML = '<div class="card danger">' + UI.escapeHtml(e.message) + '</div>';
+        return;
+      }
+
+      // Auto-select last used assignment if state is empty.
+      if (!s.assignmentUuid && ctx.lastUsed &&
+          ctx.assignments.some(a => a.UUID === ctx.lastUsed)) {
+        s.assignmentUuid = ctx.lastUsed;
+      }
+
+      body.innerHTML =
+        '<div class="card">' +
+          '<h2>Parameters</h2>' +
+          '<p class="muted tiny">Fill placeholder values for this send. ' +
+            'Assignments are reusable bundles; ad-hoc overrides apply only this time.</p>' +
+
+          '<div class="form-field"><label>Assignment</label>' +
+            '<select id="cmp-assignment">' +
+              '<option value="">— None —</option>' +
+              ctx.assignments.map(a =>
+                '<option value="' + UI.escapeAttr(a.UUID) + '"' +
+                  (s.assignmentUuid === a.UUID ? ' selected' : '') + '>' +
+                  UI.escapeHtml(a.Name) +
+                  (a.Course || a.Batch ? '  (' +
+                    UI.escapeHtml([a.Course, a.Batch].filter(Boolean).join(' / ')) + ')' : '') +
+                '</option>').join('') +
+            '</select>' +
+            '<div class="tiny muted" style="margin-top:4px">' +
+              ctx.assignments.length + ' assignment(s) matching your filter' +
+              (ctx.lastUsed ? ' · last used auto-selected' : '') +
+            '</div>' +
+          '</div>' +
+
+          '<div id="cmp-assignment-preview"></div>' +
+
+          '<h3 style="margin-top:16px">Ad-hoc overrides</h3>' +
+          '<p class="tiny muted">One row per <code>{placeholder} = value</code>. Overrides the Assignment for this send only.</p>' +
+          '<div id="cmp-params-rows"></div>' +
+          '<button class="btn btn-link" id="cmp-add-row" style="margin-top:4px">+ Add a row</button>' +
+
+          '<h3 style="margin-top:16px">Placeholders in this template</h3>' +
+          '<div id="cmp-placeholder-status" class="tiny"></div>' +
+
+          '<div class="row" style="justify-content:space-between; margin-top:16px">' +
+            '<button class="btn" id="cmp-back">← Back</button>' +
+            '<button class="btn btn-primary" id="cmp-next">Next: preview →</button>' +
+          '</div>' +
+        '</div>';
+
+      // Render initial param rows from state
+      Views.Compose._renderParamRows();
+      Views.Compose._updateAssignmentPreview(ctx);
+      Views.Compose._updatePlaceholderStatus(placeholders, ctx);
+
+      document.getElementById('cmp-assignment').addEventListener('change', e => {
+        Views.Compose._state.assignmentUuid = e.target.value;
+        Views.Compose._updateAssignmentPreview(ctx);
+        Views.Compose._updatePlaceholderStatus(placeholders, ctx);
+      });
+      document.getElementById('cmp-add-row').addEventListener('click', () => {
+        const key = prompt('Placeholder name (without braces), e.g. "duedate":');
+        if (!key) return;
+        Views.Compose._state.params[key.trim().toLowerCase()] = '';
+        Views.Compose._renderParamRows();
+        Views.Compose._updatePlaceholderStatus(placeholders, ctx);
+      });
+      document.getElementById('cmp-back').addEventListener('click', () => {
+        Views.Compose._state.step = 2; Views.Compose._renderStep();
+      });
+      document.getElementById('cmp-next').addEventListener('click', () => {
+        Views.Compose._state.step = 4; Views.Compose._renderStep();
+      });
+    },
+
+    _extractPlaceholders(body) {
+      const set = {};
+      String(body || '').replace(/\{(\w+)\}/g, function (m, k) { set[k.toLowerCase()] = true; });
+      return Object.keys(set);
+    },
+
+    _renderParamRows() {
+      const root = document.getElementById('cmp-params-rows');
+      if (!root) return;
+      const params = Views.Compose._state.params;
+      const keys = Object.keys(params);
+      if (!keys.length) {
+        root.innerHTML = '<div class="tiny muted">No ad-hoc overrides set.</div>';
+        return;
+      }
+      root.innerHTML = keys.map(k =>
+        '<div class="row" style="gap:6px; margin:4px 0">' +
+          '<code style="flex:0 0 140px">{' + UI.escapeHtml(k) + '}</code>' +
+          '<input type="text" data-param-key="' + UI.escapeAttr(k) + '" value="' + UI.escapeAttr(params[k] || '') + '" style="flex:1">' +
+          '<button class="btn btn-link danger" data-rm-key="' + UI.escapeAttr(k) + '">remove</button>' +
+        '</div>').join('');
+      root.querySelectorAll('input[data-param-key]').forEach(inp => {
+        inp.addEventListener('input', e => {
+          Views.Compose._state.params[e.target.getAttribute('data-param-key')] = e.target.value;
+        });
+      });
+      root.querySelectorAll('[data-rm-key]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          delete Views.Compose._state.params[btn.getAttribute('data-rm-key')];
+          Views.Compose._renderParamRows();
+        });
+      });
+    },
+
+    _updateAssignmentPreview(ctx) {
+      const el = document.getElementById('cmp-assignment-preview');
+      if (!el) return;
+      const uuid = Views.Compose._state.assignmentUuid;
+      const a = ctx.assignments.find(x => x.UUID === uuid);
+      if (!a) { el.innerHTML = ''; return; }
+      const varKeys = Object.keys(a.Variables || {});
+      el.innerHTML =
+        '<div class="card" style="background:var(--color-bg-muted); margin-top:8px">' +
+          (a.Description ? '<div class="tiny">' + UI.escapeHtml(a.Description) + '</div>' : '') +
+          (a.DueDate ? '<div class="tiny"><strong>Due:</strong> ' + UI.escapeHtml(a.DueDate) + '</div>' : '') +
+          '<div class="tiny" style="margin-top:4px"><strong>Variables:</strong> ' +
+            (varKeys.length
+              ? varKeys.map(k => '<code>{' + UI.escapeHtml(k) + '}</code>=' + UI.escapeHtml(String(a.Variables[k]))).join(', ')
+              : '<span class="muted">none</span>') +
+          '</div>' +
+        '</div>';
+    },
+
+    _updatePlaceholderStatus(placeholders, ctx) {
+      const el = document.getElementById('cmp-placeholder-status');
+      if (!el) return;
+      const studentKeys = ['name','fullname','course','batch','homework','phone','tags'];
+      const builtins    = ['date','time','signature'];
+      const a = ctx.assignments.find(x => x.UUID === Views.Compose._state.assignmentUuid);
+      const assignKeys  = a ? Object.keys(a.Variables || {}).concat(a.DueDate ? ['duedate'] : []) : [];
+      const adhocKeys   = Object.keys(Views.Compose._state.params).filter(k => Views.Compose._state.params[k] !== '');
+
+      if (!placeholders.length) {
+        el.innerHTML = '<span class="muted">Template has no placeholders.</span>';
+        return;
+      }
+      el.innerHTML = placeholders.map(p => {
+        let src = null;
+        if (adhocKeys.includes(p))   src = 'ad-hoc';
+        else if (assignKeys.includes(p)) src = 'assignment';
+        else if (studentKeys.includes(p)) src = 'student';
+        else if (builtins.includes(p))   src = 'built-in';
+        const ok = !!src;
+        return '<div>' +
+          (ok ? '<span style="color:var(--color-text-success)">✓</span> '
+              : '<span style="color:var(--color-text-warning)">○</span> ') +
+          '<code>{' + UI.escapeHtml(p) + '}</code>' +
+          (ok ? ' <span class="muted">— from ' + src + '</span>'
+              : ' <span class="muted">— not filled, will appear literally</span>') +
+          '</div>';
+      }).join('');
+    },
+
+    async _step4Preview () {
       const body = document.getElementById('compose-body');
       body.innerHTML = '<div class="loading-shell">Generating previews…</div>';
       try {
@@ -243,15 +422,19 @@
         let previews;
         if (s.templateUuid) {
           previews = await Api.call('api_compose_preview', {
-            templateUuid: s.templateUuid,
-            filter: s.filter
+            templateUuid:   s.templateUuid,
+            filter:         s.filter,
+            assignmentUuid: s.assignmentUuid || '',
+            params:         s.params || {}
           });
         } else {
           previews = await Api.call('api_compose_previewAdhoc', {
-            body: s.adhocBody,
-            filter: s.filter,
-            wasAiAssisted: s.wasAiAssisted,
-            aiCallUuids: s.adhocAiCallUuids
+            body:           s.adhocBody,
+            filter:         s.filter,
+            assignmentUuid: s.assignmentUuid || '',
+            params:         s.params || {},
+            wasAiAssisted:  s.wasAiAssisted,
+            aiCallUuids:    s.adhocAiCallUuids
           });
         }
         Views.Compose._state.previews = previews;
@@ -264,7 +447,7 @@
               '</div>' +
             '</div>';
           document.getElementById('cmp-back').addEventListener('click', () => {
-            Views.Compose._state.step = 2;
+            Views.Compose._state.step = 3;
             Views.Compose._renderStep();
           });
           return;
@@ -295,7 +478,7 @@
           Views.Compose._renderStep();
         });
         document.getElementById('cmp-next').addEventListener('click', () => {
-          Views.Compose._state.step = 4;
+          Views.Compose._state.step = 5;
           Views.Compose._renderStep();
         });
 
@@ -381,7 +564,7 @@
 
     // ---------- Step 4: commit ----------
 
-    async _step4() {
+    async _step5Commit() {
       const body = document.getElementById('compose-body');
       const s = Views.Compose._state;
       body.innerHTML =
@@ -409,6 +592,7 @@
           const res = await Api.call('api_compose_commit', {
             previews: s.previews,
             templateUuid: s.templateUuid,
+            assignmentUuid: s.assignmentUuid || '',
             campaignTag: tag
           });
           (res.warnings || []).forEach(w => UI.toast(w, 'info'));

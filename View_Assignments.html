@@ -1,0 +1,209 @@
+<script>
+  Views.Assignments = {
+    _state: { list: [], selectedUuid: null },
+
+    async render() {
+      const view = document.getElementById('view');
+      view.innerHTML =
+        '<div class="view-header">' +
+          '<h1>Assignments</h1>' +
+          '<div class="row">' +
+            '<button class="btn btn-primary" id="asn-new">New assignment</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="split-pane">' +
+          '<div id="asn-list-pane"><div class="loading-shell">Loading…</div></div>' +
+          '<div id="asn-editor-pane" class="card"><p class="muted">Pick an assignment on the left, or create a new one.</p></div>' +
+        '</div>';
+
+      document.getElementById('asn-new').addEventListener('click', () => Views.Assignments._editEmpty());
+      await Views.Assignments._refreshList();
+    },
+
+    async _refreshList() {
+      const myGen = (window.viewGen ? viewGen() : 0);
+      try {
+        const rows = await Api.call('api_assignments_list', {});
+        if (window.viewStale && viewStale(myGen)) return;
+        Views.Assignments._state.list = rows;
+        const pane = document.getElementById('asn-list-pane');
+        if (!pane) return;
+        if (!rows.length) {
+          pane.innerHTML = UI.empty(
+            'No assignments yet.',
+            '<button class="btn btn-primary" onclick="Views.Assignments._editEmpty()">Create one</button>'
+          );
+          return;
+        }
+        pane.innerHTML = '<div class="card" style="padding:0">' +
+          '<table class="data"><thead><tr><th>Name</th><th>Course</th><th>Batch</th><th>Due</th><th>Active</th></tr></thead><tbody>' +
+          rows.map(a =>
+            '<tr data-uuid="' + UI.escapeAttr(a.UUID) + '" style="cursor:pointer">' +
+              '<td><strong>' + UI.escapeHtml(a.Name) + '</strong>' +
+                (a.Description ? '<div class="tiny">' + UI.escapeHtml(a.Description) + '</div>' : '') +
+              '</td>' +
+              '<td>' + UI.escapeHtml(a.Course || '*') + '</td>' +
+              '<td>' + UI.escapeHtml(a.Batch  || '*') + '</td>' +
+              '<td class="tiny">' + UI.escapeHtml(a.DueDate || '') + '</td>' +
+              '<td>' + (a.Active === true || String(a.Active) === 'true'
+                ? '<span class="badge badge-success">Active</span>'
+                : '<span class="badge">Inactive</span>') + '</td>' +
+            '</tr>'
+          ).join('') +
+          '</tbody></table></div>';
+        pane.querySelectorAll('tr[data-uuid]').forEach(tr => {
+          tr.addEventListener('click', () => Views.Assignments._edit(tr.dataset.uuid));
+        });
+      } catch (e) {
+        const pane = document.getElementById('asn-list-pane');
+        if (pane) pane.innerHTML = '<div class="card danger">' + UI.escapeHtml(e.message) + '</div>';
+      }
+    },
+
+    _editEmpty() {
+      Views.Assignments._state.selectedUuid = null;
+      Views.Assignments._renderEditor({
+        Name: '', Description: '', Course: '*', Batch: '*',
+        DueDate: '', Variables: {}, Active: true
+      }, false);
+    },
+
+    async _edit(uuid) {
+      Views.Assignments._state.selectedUuid = uuid;
+      try {
+        const a = await Api.call('api_assignments_get', { uuid });
+        // Variables may come back as a JSON string — parse for the form.
+        let vars = {};
+        if (a.Variables) {
+          if (typeof a.Variables === 'object') vars = a.Variables;
+          else { try { vars = JSON.parse(a.Variables) || {}; } catch (_) {} }
+        }
+        Views.Assignments._renderEditor(Object.assign({}, a, { Variables: vars }), true);
+      } catch (e) { UI.toast(e.message, 'danger'); }
+    },
+
+    _renderEditor(a, isExisting) {
+      const pane = document.getElementById('asn-editor-pane');
+      if (!pane) return;
+      pane.innerHTML =
+        '<h2 style="margin-top:0">' + (isExisting ? 'Edit assignment' : 'New assignment') + '</h2>' +
+
+        '<div class="form-field"><label>Name *</label>' +
+          '<input id="asn-name" type="text" value="' + UI.escapeAttr(a.Name || '') + '"></div>' +
+        '<div class="form-field"><label>Description</label>' +
+          '<input id="asn-desc" type="text" value="' + UI.escapeAttr(a.Description || '') + '"></div>' +
+
+        '<div class="form-row">' +
+          '<div class="form-field"><label>Course (or * for any)</label>' +
+            '<input id="asn-course" type="text" value="' + UI.escapeAttr(a.Course || '*') + '"></div>' +
+          '<div class="form-field"><label>Batch (or * for any)</label>' +
+            '<input id="asn-batch" type="text" value="' + UI.escapeAttr(a.Batch || '*') + '"></div>' +
+          '<div class="form-field"><label>Due date (optional)</label>' +
+            '<input id="asn-due" type="date" value="' + UI.escapeAttr((a.DueDate || '').slice(0, 10)) + '"></div>' +
+        '</div>' +
+
+        '<h3>Variables</h3>' +
+        '<p class="tiny muted">Each row defines a <code>{placeholder}</code> that templates can use.</p>' +
+        '<div id="asn-vars"></div>' +
+        '<button class="btn btn-link" id="asn-add-var" style="margin-top:4px">+ Add a variable</button>' +
+
+        '<label class="row" style="gap:8px; margin-top:12px">' +
+          '<input id="asn-active" type="checkbox" class="toggle" ' +
+            (a.Active === false || String(a.Active) === 'false' ? '' : 'checked') + '> Active</label>' +
+
+        '<div class="row" style="margin-top:16px; justify-content:flex-end; gap:8px">' +
+          (isExisting ? '<button class="btn btn-danger" id="asn-delete">Delete</button>' : '') +
+          '<button class="btn btn-primary" id="asn-save">' +
+            (isExisting ? 'Save changes' : 'Create assignment') +
+          '</button>' +
+        '</div>';
+
+      // Local state for variable rows
+      const vars = Object.assign({}, a.Variables || {});
+      Views.Assignments._renderVarRows(vars);
+
+      pane.querySelector('#asn-add-var').addEventListener('click', () => {
+        const k = prompt('Placeholder name (without braces), e.g. "homework":');
+        if (!k) return;
+        const key = k.trim().toLowerCase();
+        if (!key) return;
+        vars[key] = vars[key] || '';
+        Views.Assignments._renderVarRows(vars);
+      });
+
+      if (isExisting) {
+        pane.querySelector('#asn-delete').addEventListener('click', async () => {
+          const ok = await UI.confirm({
+            title: 'Delete assignment',
+            message: 'Permanently delete "' + a.Name + '"? Past sends are not affected.',
+            danger: true, okLabel: 'Delete'
+          });
+          if (!ok) return;
+          try {
+            await Api.call('api_assignments_remove', { uuid: a.UUID });
+            UI.toast('Deleted', 'success');
+            Views.Assignments._state.selectedUuid = null;
+            Views.Assignments._refreshList();
+            const ed = document.getElementById('asn-editor-pane');
+            if (ed) ed.innerHTML = '<p class="muted">Pick an assignment on the left, or create a new one.</p>';
+          } catch (e) { UI.toast(e.message, 'danger'); }
+        });
+      }
+
+      pane.querySelector('#asn-save').addEventListener('click', async () => {
+        // Pull latest variable values from the rendered rows
+        const root = document.getElementById('asn-vars');
+        const live = {};
+        root.querySelectorAll('[data-var-key]').forEach(row => {
+          const k = row.getAttribute('data-var-key');
+          const v = row.querySelector('input.var-val').value;
+          if (k) live[k] = v;
+        });
+        const payload = {
+          Name:        document.getElementById('asn-name').value,
+          Description: document.getElementById('asn-desc').value,
+          Course:      document.getElementById('asn-course').value,
+          Batch:       document.getElementById('asn-batch').value,
+          DueDate:     document.getElementById('asn-due').value,
+          Variables:   live,
+          Active:      document.getElementById('asn-active').checked
+        };
+        try {
+          if (isExisting) {
+            await Api.call('api_assignments_update', { uuid: a.UUID, patch: payload });
+          } else {
+            const created = await Api.call('api_assignments_create', payload);
+            Views.Assignments._state.selectedUuid = created && created.UUID;
+          }
+          UI.toast('Saved', 'success');
+          await Views.Assignments._refreshList();
+          if (Views.Assignments._state.selectedUuid) Views.Assignments._edit(Views.Assignments._state.selectedUuid);
+        } catch (e) { UI.toast(e.message, 'danger'); }
+      });
+    },
+
+    _renderVarRows(vars) {
+      const root = document.getElementById('asn-vars');
+      if (!root) return;
+      const keys = Object.keys(vars);
+      if (!keys.length) {
+        root.innerHTML = '<div class="tiny muted">No variables yet. Add one to fill placeholders like <code>{homework}</code>.</div>';
+        return;
+      }
+      root.innerHTML = keys.map(k =>
+        '<div class="row" data-var-key="' + UI.escapeAttr(k) + '" style="gap:6px; margin:4px 0">' +
+          '<code style="flex:0 0 140px">{' + UI.escapeHtml(k) + '}</code>' +
+          '<input type="text" class="var-val" value="' + UI.escapeAttr(vars[k] || '') + '" style="flex:1">' +
+          '<button class="btn btn-link danger var-rm">remove</button>' +
+        '</div>'
+      ).join('');
+      root.querySelectorAll('.var-rm').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const key = btn.closest('[data-var-key]').getAttribute('data-var-key');
+          delete vars[key];
+          Views.Assignments._renderVarRows(vars);
+        });
+      });
+    }
+  };
+</script>

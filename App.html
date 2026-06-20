@@ -93,6 +93,7 @@
       { group: 'Workspace', label: 'Dashboard',      path: '/dashboard'      },
       { group: 'Workspace', label: 'Students',       path: '/students',  countKey: 'students' },
       { group: 'Workspace', label: 'Templates',      path: '/templates', countKey: 'templates' },
+      { group: 'Workspace', label: 'Assignments',    path: '/assignments'    },
       { group: 'Workspace', label: 'Compose',        path: '/compose'        },
       { group: 'Workspace', label: 'Queue',          path: '/queue',     countKey: 'queue', warnIfPending: true },
       { group: 'Workspace', label: 'History',        path: '/history'        },
@@ -144,7 +145,8 @@
       '/history':       (q) => Views.History.render(q),
       '/llm-usage':     () => Views.LlmUsage.render(),
       '/settings':      () => Views.Settings.render(),
-      '/import-export': () => Views.ImportExport.render()
+      '/import-export': () => Views.ImportExport.render(),
+      '/assignments':   () => Views.Assignments.render(),
     },
 
     navigate(path) { location.hash = '#' + path; },

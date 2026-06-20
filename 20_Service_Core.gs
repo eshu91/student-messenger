@@ -267,21 +267,43 @@ const TemplateService = {
     return { found, unknown };
   },
 
+/**
+   * Render a template body against a student record + extra params.
+   * Substitution priority (last wins):
+   *   1. Built-ins:  {date}, {time}, {signature}
+   *   2. Student fields: {name}, {fullname}, {course}, {batch}, {homework}, {phone}, {tags}
+   *   3. Extra params (Assignment variables + ad-hoc overrides)
+   * Unknown placeholders are left in place as {whatever}.
+   */
   render(body, student, params) {
-    const cfg = ConfigService;
-    const tz = cfg.get('system.timezone', 'Asia/Kathmandu');
-    const today = new Date();
-    const vars = Object.assign({
-      name:      student && student.Name      || '',
-      fullname:  student && (student.FullName || student.Name) || '',
-      course:    student && student.Course    || '',
-      batch:     student && student.Batch     || '',
-      homework:  student && student.Homework  || '',
-      date:      Utilities.formatDate(today, tz, 'yyyy-MM-dd'),
-      time:      Utilities.formatDate(today, tz, 'HH:mm'),
-      signature: cfg.get('branding.signature', '')
-    }, params || {});
-    return renderTemplate(body, vars);
+    const tz = ConfigService.get('system.timezone', 'Asia/Kathmandu');
+    const now = new Date();
+    const ctx = {
+      date:      Utilities.formatDate(now, tz, 'yyyy-MM-dd'),
+      time:      Utilities.formatDate(now, tz, 'HH:mm'),
+      signature: ConfigService.get('branding.signature', '')
+    };
+    if (student) {
+      ctx.name     = student.Name     || '';
+      ctx.fullname = student.FullName || student.Name || '';
+      ctx.course   = student.Course   || '';
+      ctx.batch    = student.Batch    || '';
+      ctx.homework = student.Homework || '';
+      ctx.phone    = student.Phone    || '';
+      ctx.tags     = student.Tags     || '';
+    }
+    if (params && typeof params === 'object') {
+      Object.keys(params).forEach(k => {
+        const v = params[k];
+        if (v !== undefined && v !== null && v !== '') {
+          ctx[String(k).toLowerCase()] = String(v);
+        }
+      });
+    }
+    return String(body || '').replace(/\{(\w+)\}/g, function (m, key) {
+      const k = key.toLowerCase();
+      return (k in ctx) ? ctx[k] : m;
+    });
   },
 
   _validate(t) {
@@ -297,5 +319,83 @@ const TemplateService = {
     if (ENUMS.TemplateSource.indexOf(rec.Source) === -1) rec.Source = 'manual';
     TemplateService.validateLength(rec.Body);
     return rec;
+  }
+};
+
+
+// =====================================================================
+// AssignmentService — reusable per-send context (homework, room, etc.)
+// =====================================================================
+
+const AssignmentService = {
+  list(filter) {
+    const f = filter || {};
+    return AssignmentRepo.list(a => {
+      if (f.active === true  && !asBool(a.Active)) return false;
+      if (f.active === false &&  asBool(a.Active)) return false;
+      // Course/batch matching: '*' or empty = matches any.
+      if (f.course && a.Course && String(a.Course) !== '*' && String(a.Course) !== String(f.course)) return false;
+      if (f.batch  && a.Batch  && String(a.Batch)  !== '*' && String(a.Batch)  !== String(f.batch))  return false;
+      return true;
+    });
+  },
+
+  get(uuid) { return AssignmentRepo.findByUuid(uuid); },
+
+  create(rec) {
+    const v = AssignmentService._validate(rec, false);
+    return AssignmentRepo.insert(v);
+  },
+
+  update(uuid, patch) {
+    const existing = AssignmentRepo.findByUuid(uuid);
+    if (!existing) throw new NotFoundError('Assignment not found');
+    const merged = Object.assign({}, existing, patch);
+    const v = AssignmentService._validate(merged, true);
+    return AssignmentRepo.update(uuid, v);
+  },
+
+  remove(uuid) { return AssignmentRepo.remove(uuid); },
+
+  /** Parse the Variables column (JSON string) into a plain object. */
+  parseVariables(raw) {
+    if (!raw) return {};
+    if (typeof raw === 'object') return raw;
+    try { return JSON.parse(String(raw)) || {}; }
+    catch (_) { return {}; }
+  },
+
+  /**
+   * Get full merged variables for an assignment, including built-ins
+   * derived from the row (currently just {duedate}).
+   */
+  resolvedVariables(assignment) {
+    if (!assignment) return {};
+    const vars = AssignmentService.parseVariables(assignment.Variables);
+    if (assignment.DueDate) vars.duedate = String(assignment.DueDate);
+    return vars;
+  },
+
+  _validate(rec, isUpdate) {
+    const v = {
+      Name:        requireString(rec.Name, 'Name'),
+      Description: String(rec.Description || ''),
+      Course:      String(rec.Course || ''),
+      Batch:       String(rec.Batch  || ''),
+      DueDate:     String(rec.DueDate || ''),
+      Variables:   '{}',
+      Active:      rec.Active === undefined ? true : asBool(rec.Active)
+    };
+    // Variables: accept object (preferred) or JSON string.
+    if (rec.Variables == null || rec.Variables === '') {
+      v.Variables = '{}';
+    } else if (typeof rec.Variables === 'object') {
+      v.Variables = JSON.stringify(rec.Variables);
+    } else {
+      const s = String(rec.Variables);
+      try { JSON.parse(s); v.Variables = s; }
+      catch (_) { throw new ValidationError('Variables must be valid JSON'); }
+    }
+    return v;
   }
 };

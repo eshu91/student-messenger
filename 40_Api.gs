@@ -160,3 +160,37 @@ function api_workspace_backup() {
     // Keys and full LlmCalls prompts/responses are NOT included.
   }));
 }
+
+// ---------- Assignments ----------
+
+function api_assignments_list(p)       { return wrapApi(() => AssignmentService.list(p || {})); }
+function api_assignments_get(p)        { return wrapApi(() => AssignmentService.get(p.uuid)); }
+function api_assignments_create(p)     { return wrapApi(() => AssignmentService.create(p)); }
+function api_assignments_update(p)     { return wrapApi(() => AssignmentService.update(p.uuid, p.patch || {})); }
+function api_assignments_remove(p)     { return wrapApi(() => AssignmentService.remove(p.uuid)); }
+
+/**
+ * Bundle of context for the Compose "Parameters" step.
+ * Input: { course, batch }
+ * Output: { assignments: [...matching, active...], lastUsed: 'asn_…' | '' }
+ */
+function api_compose_paramContext(p) {
+  return wrapApi(() => {
+    const opts = p || {};
+    const assignments = AssignmentService.list({
+      active: true,
+      course: opts.course || null,
+      batch:  opts.batch  || null
+    }).map(a => ({
+      UUID: a.UUID,
+      Name: a.Name,
+      Description: a.Description,
+      Course: a.Course,
+      Batch: a.Batch,
+      DueDate: a.DueDate,
+      Variables: AssignmentService.parseVariables(a.Variables)
+    }));
+    const lastUsed = _getLastAssignment(opts.course || '', opts.batch || '');
+    return { assignments, lastUsed };
+  });
+}

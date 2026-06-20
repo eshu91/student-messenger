@@ -12,7 +12,8 @@ const TYPE_PREFIX = {
   Templates: 'tpl',
   Queue:     'que',
   History:   'his',
-  LlmCalls:  'llm'
+  LlmCalls:  'llm',
+  Assignments: 'asn'   
 };
 
 const LLM_KEY_NAMES = {
@@ -50,6 +51,10 @@ const SHEET_HEADERS = {
     'Feature', 'Provider', 'Model', 'PromptHash', 'Prompt', 'Response',
     'InputTokens', 'OutputTokens', 'EstCostUSD', 'LatencyMs',
     'Status', 'ErrorMessage', 'RelatedEntityUUID'
+  ]),
+  Assignments: AUDIT_HEADERS.concat([          // NEW
+    'Name', 'Description', 'Course', 'Batch',
+    'DueDate', 'Variables', 'Active'
   ])
 };
 
@@ -66,7 +71,8 @@ const COL = {
   Templates: _colMap(SHEET_HEADERS.Templates),
   Queue:     _colMap(SHEET_HEADERS.Queue),
   History:   _colMap(SHEET_HEADERS.History),
-  LlmCalls:  _colMap(SHEET_HEADERS.LlmCalls)
+  LlmCalls:  _colMap(SHEET_HEADERS.LlmCalls),
+  Assignments: _colMap(SHEET_HEADERS.Assignments) 
 };
 
 const ENUMS = {
@@ -93,6 +99,7 @@ const SEED_CONFIGS = [
   ['system', 'sheetName.history',   'History',   'string', 'Sheet name for history',   false, ''],
   ['system', 'sheetName.llmCalls',  'LlmCalls',  'string', 'Sheet name for LLM calls', false, ''],
   ['system', 'schemaVersion', SCHEMA_VERSION, 'number', 'Internal schema version', false, ''],
+  ['system', 'sheetName.assignments', 'Assignments', 'string', 'Sheet name for assignments', false, ''],
 
   ['limits', 'maxMessageLength',     '1500', 'number', 'Hard cap on rendered message length',           true, ''],
   ['limits', 'maxQueueSize',         '200',  'number', 'Maximum simultaneous Pending rows in queue',    true, ''],
